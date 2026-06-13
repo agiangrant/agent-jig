@@ -75,6 +75,14 @@ export const GovernorEvent = z.object({
 });
 export type GovernorEvent = z.infer<typeof GovernorEvent>;
 
+/** A set of edits grouped under the agent's stated intent (a Phase 2 projection). */
+export const IntentGroup = z.object({
+  id: z.string(),
+  label: z.string(),
+  editIds: z.array(z.string()),
+});
+export type IntentGroup = z.infer<typeof IntentGroup>;
+
 // --- Config & blast-radius defaults ---
 
 /** Path glob → starting dial mode. High-risk targets auto-downshift; manual override wins. */

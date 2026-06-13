@@ -1,5 +1,7 @@
 // Dev harness: run a real governed session and auto-ack each gated edit after a
 // short beat, to demonstrate the live backpressure loop. Not part of the product.
+import type { GovernorEvent } from "@governor/contracts";
+import { groupByIntent } from "@governor/core";
 import { startGovernorServer } from "@governor/server";
 import { WebSocket } from "ws";
 
@@ -22,12 +24,14 @@ const server = await startGovernorServer({
 console.log(`${ts()} server up at ${server.url} (mode: slowed)`);
 
 const scheduled = new Set<string>();
+const events: GovernorEvent[] = [];
 const ws = new WebSocket(server.url.replace("http", "ws"));
 
 ws.on("message", (raw) => {
   const msg = JSON.parse(String(raw));
   if (msg.type === "event") {
-    const e = msg.event;
+    const e = msg.event as GovernorEvent;
+    events.push(e);
     if (e.type === "reasoning") {
       console.log(`${ts()} #${e.seq} 💭 ${(e.payload as { text?: string })?.text ?? ""}`);
     } else {
@@ -52,5 +56,17 @@ ws.on("message", (raw) => {
 
 await server.done;
 console.log(`${ts()} session done`);
+
+const groups = groupByIntent(events);
+console.log(`\n=== ${groups.length} intent group(s) ===`);
+for (const g of groups) {
+  console.log(`▸ ${g.label}`);
+  for (const id of g.editIds) {
+    const e = events.find((x) => x.editId === id);
+    const path = ((e?.payload ?? {}) as { file_path?: string }).file_path ?? "";
+    console.log(`    - ${e?.toolName} ${path}`);
+  }
+}
+
 ws.close();
 await server.close();

@@ -1,4 +1,6 @@
 <script lang="ts">
+import type { GovernorEvent } from "@governor/contracts";
+import { groupByIntent } from "@governor/core";
 import DiffView from "./lib/DiffView.svelte";
 import { GovernorConnection } from "./lib/connection.svelte.ts";
 
@@ -6,6 +8,16 @@ const conn = new GovernorConnection();
 // Same-origin when served by the governor server (any --port); dev sets VITE_WS_URL.
 const wsUrl = import.meta.env.VITE_WS_URL ?? `ws://${location.host}`;
 conn.connect(wsUrl);
+
+const groups = $derived(groupByIntent(conn.events));
+
+function editEvent(editId: string): GovernorEvent | undefined {
+  return conn.events.find((e) => e.editId === editId && e.type === "tool_call");
+}
+
+function filePath(payload: unknown): string {
+  return ((payload ?? {}) as { file_path?: string }).file_path ?? "";
+}
 
 const toggle = () => conn.setDial(conn.mode === "slowed" ? "realtime" : "slowed");
 
@@ -63,6 +75,26 @@ function reasonText(p: unknown): string {
           </li>
         {/each}
       </ul>
+    {/if}
+  </section>
+
+  <section class="changes">
+    <h2>Changes by intent</h2>
+    {#if groups.length === 0}
+      <p class="empty">No edits yet.</p>
+    {:else}
+      {#each groups as g (g.id)}
+        <div class="group">
+          <p class="label">{g.label}</p>
+          {#each g.editIds as id (id)}
+            {@const e = editEvent(id)}
+            <div class="edit">
+              <code>{filePath(e?.payload)}</code>
+              <DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />
+            </div>
+          {/each}
+        </div>
+      {/each}
     {/if}
   </section>
 
@@ -266,5 +298,23 @@ function reasonText(p: unknown): string {
     color: var(--accent);
     font-style: italic;
     opacity: 0.85;
+  }
+
+  .group {
+    border-left: 2px solid var(--accent);
+    padding-left: 12px;
+    margin-bottom: 18px;
+  }
+  .group .label {
+    color: var(--fg);
+    font-weight: 600;
+    margin: 0 0 8px;
+  }
+  .group .edit {
+    margin-bottom: 8px;
+  }
+  .group .edit code {
+    color: var(--muted);
+    font-size: 12px;
   }
 </style>
