@@ -1,0 +1,24 @@
+{
+  "name": "@governor/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/dev.ts"
+  },
+  "dependencies": {
+    "@governor/agent-host": "workspace:*",
+    "@governor/contracts": "workspace:*",
+    "@governor/core": "workspace:*",
+    "@governor/store": "workspace:*",
+    "@hono/node-server": "^2.0.4",
+    "hono": "^4.12.25",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
+}

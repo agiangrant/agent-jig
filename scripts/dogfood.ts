@@ -1,0 +1,52 @@
+// Dev harness: run a real governed session and auto-ack each gated edit after a
+// short beat, to demonstrate the live backpressure loop. Not part of the product.
+import { startGovernorServer } from "@governor/server";
+import { WebSocket } from "ws";
+
+const repo = process.argv[2] ?? process.cwd();
+const task =
+  process.argv[3] ??
+  "Add a one-line JSDoc comment above each function and method in the TypeScript files under src/, describing what it does. Do not change any logic.";
+const ACK_DELAY_MS = 800;
+
+const t0 = Date.now();
+const ts = () => `+${((Date.now() - t0) / 1000).toFixed(1)}s`;
+
+const server = await startGovernorServer({
+  repoPath: repo,
+  prompt: task,
+  mode: "slowed",
+  port: 0,
+  dbPath: ":memory:",
+});
+console.log(`${ts()} server up at ${server.url} (mode: slowed)`);
+
+const scheduled = new Set<string>();
+const ws = new WebSocket(server.url.replace("http", "ws"));
+
+ws.on("message", (raw) => {
+  const msg = JSON.parse(String(raw));
+  if (msg.type === "event") {
+    const e = msg.event;
+    const tool = e.toolName ? ` ${e.toolName}` : "";
+    const gate = e.gateState ? ` [${e.gateState}]` : "";
+    console.log(`${ts()} #${e.seq} ${e.type}${tool}${gate}`);
+  } else if (msg.type === "queue_state") {
+    for (const p of msg.pending) {
+      if (scheduled.has(p.editId)) continue;
+      scheduled.add(p.editId);
+      console.log(
+        `${ts()}   ⛔ GATED ${p.path} (risk ${p.risk}) — human acks in ${ACK_DELAY_MS}ms`,
+      );
+      setTimeout(() => {
+        console.log(`${ts()}   ✅ ACK ${p.path}`);
+        ws.send(JSON.stringify({ type: "ack_edit", editId: p.editId }));
+      }, ACK_DELAY_MS);
+    }
+  }
+});
+
+await server.done;
+console.log(`${ts()} session done`);
+ws.close();
+await server.close();

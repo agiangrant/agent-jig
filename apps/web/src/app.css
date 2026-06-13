@@ -1,0 +1,27 @@
+:root {
+  --bg: #14151a;
+  --panel: #1c1e26;
+  --line: #2a2d38;
+  --fg: #e7e9ee;
+  --muted: #8a90a2;
+  --accent: #6ea8fe;
+  --warn: #e6b450;
+  --danger: #e06c75;
+  --ok: #7fd17f;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font:
+    14px / 1.5 ui-monospace,
+    "SF Mono",
+    Menlo,
+    monospace;
+}
