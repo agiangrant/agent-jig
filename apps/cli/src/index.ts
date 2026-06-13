@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { parseArgs } from "node:util";
 import type { DialMode } from "@governor/contracts";
 import { startGovernorServer } from "@governor/server";
+import { parseCliArgs } from "./args.ts";
 
 function usage(): void {
   console.log(`
@@ -37,37 +37,24 @@ function openBrowser(url: string): void {
   }
 }
 
-const { values, positionals } = parseArgs({
-  allowPositionals: true,
-  options: {
-    repo: { type: "string" },
-    mode: { type: "string" },
-    port: { type: "string" },
-    db: { type: "string" },
-    help: { type: "boolean", short: "h" },
-  },
-});
-
-const [command, ...taskParts] = positionals;
-if (values.help || command !== "run") {
+const cli = parseCliArgs(process.argv.slice(2));
+if (cli.help || cli.command !== "run") {
   usage();
-  process.exit(values.help || command === undefined ? 0 : 1);
+  process.exit(cli.help || cli.command === undefined ? 0 : 1);
 }
-
-const prompt = taskParts.join(" ").trim();
-if (!prompt) {
+if (!cli.prompt) {
   console.error("Error: a task prompt is required.\n");
   usage();
   process.exit(1);
 }
 
-const repoPath = values.repo ?? process.cwd();
+const repoPath = cli.repo ?? process.cwd();
 const server = await startGovernorServer({
   repoPath,
-  prompt,
-  mode: parseMode(values.mode),
-  port: values.port ? Number(values.port) : undefined,
-  dbPath: values.db,
+  prompt: cli.prompt,
+  mode: parseMode(cli.mode),
+  port: cli.port ? Number(cli.port) : undefined,
+  dbPath: cli.db,
 });
 
 console.log("\n  Governor is supervising the agent.");
