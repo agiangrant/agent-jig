@@ -1,4 +1,5 @@
 <script lang="ts">
+import DiffView from "./lib/DiffView.svelte";
 import { GovernorConnection } from "./lib/connection.svelte.ts";
 
 const conn = new GovernorConnection();
@@ -11,6 +12,11 @@ function riskLabel(r: number): "high" | "med" | "low" {
   if (r >= 0.8) return "high";
   if (r >= 0.4) return "med";
   return "low";
+}
+
+// The pending edit carries only metadata; its diff lives in the tool_call event.
+function payloadFor(editId: string): unknown {
+  return conn.events.find((e) => e.editId === editId && e.type === "tool_call")?.payload;
 }
 </script>
 
@@ -37,10 +43,13 @@ function riskLabel(r: number): "high" | "med" | "low" {
       <ul>
         {#each conn.queue as edit (edit.editId)}
           <li>
-            <span class="risk {riskLabel(edit.risk)}">{riskLabel(edit.risk)}</span>
-            <code>{edit.path}</code>
-            <span class="tool">{edit.toolName}</span>
-            <button onclick={() => conn.ack(edit.editId)}>Ack</button>
+            <div class="row">
+              <span class="risk {riskLabel(edit.risk)}">{riskLabel(edit.risk)}</span>
+              <code>{edit.path}</code>
+              <span class="tool">{edit.toolName}</span>
+              <button onclick={() => conn.ack(edit.editId)}>Ack</button>
+            </div>
+            <DiffView toolName={edit.toolName} payload={payloadFor(edit.editId)} />
           </li>
         {/each}
       </ul>
@@ -142,14 +151,16 @@ function riskLabel(r: number): "high" | "med" | "low" {
   }
 
   .queue li {
-    display: flex;
-    align-items: center;
-    gap: 10px;
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: 8px;
     padding: 8px 12px;
     margin-bottom: 6px;
+  }
+  .queue .row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
   }
   .queue code {
     flex: 1;
