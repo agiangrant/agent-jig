@@ -64,8 +64,19 @@ export function runGovernedSession(deps: RunSessionDeps): RunningSession {
   const result = (async () => {
     try {
       for await (const message of runner) {
-        // Phase 2 will mine assistant messages here for narration.
-        if (message.type === "result") {
+        if (message.type === "assistant") {
+          // Capture the agent's reasoning — the raw "why" that feeds narration.
+          for (const block of message.message.content) {
+            if (block.type === "text" && block.text.trim().length > 0) {
+              const event = store.appendEvent({
+                sessionId: session.id,
+                type: "reasoning",
+                payload: { text: block.text },
+              });
+              onEvent?.(event);
+            }
+          }
+        } else if (message.type === "result") {
           store.appendEvent({ sessionId: session.id, type: "tool_result", payload: message });
         }
       }

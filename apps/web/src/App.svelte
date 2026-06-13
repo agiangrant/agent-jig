@@ -24,6 +24,10 @@ function outOfBand(p: unknown): { attributedTo: string; files: { path: string; k
   const v = (p ?? {}) as { attributedTo?: string; files?: { path: string; kind: string }[] };
   return { attributedTo: v.attributedTo ?? "external", files: v.files ?? [] };
 }
+
+function reasonText(p: unknown): string {
+  return ((p ?? {}) as { text?: string }).text ?? "";
+}
 </script>
 
 <main>
@@ -71,6 +75,11 @@ function outOfBand(p: unknown): { attributedTo: string; files: { path: string; k
             <span class="seq">#{ev.seq}</span>
             <span class="warn">⚠ changed outside the agent ({outOfBand(ev.payload).attributedTo})</span>
             <span class="files">{outOfBand(ev.payload).files.map((f) => f.path).join(", ")}</span>
+          </li>
+        {:else if ev.type === "reasoning"}
+          <li class="reason">
+            <span class="seq">#{ev.seq}</span>
+            <span class="why">{reasonText(ev.payload)}</span>
           </li>
         {:else}
           <li>
@@ -248,5 +257,14 @@ function outOfBand(p: unknown): { attributedTo: string; files: { path: string; k
   }
   .oob .files {
     color: var(--fg);
+  }
+
+  .reason {
+    align-items: flex-start;
+  }
+  .reason .why {
+    color: var(--accent);
+    font-style: italic;
+    opacity: 0.85;
   }
 </style>

@@ -38,7 +38,8 @@ export const EventType = z.enum([
   "dial_change",
   "ack",
   "out_of_band_change", // a working-tree change the agent's gated tools didn't make
-  "narration", // Phase 2
+  "reasoning", // captured agent "why" from the message stream (raw; feeds narration)
+  "narration", // Phase 2: curated/generated why annotation
   "directive", // Phase 3
   "session_end",
 ]);

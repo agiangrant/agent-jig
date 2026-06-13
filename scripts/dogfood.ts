@@ -28,9 +28,13 @@ ws.on("message", (raw) => {
   const msg = JSON.parse(String(raw));
   if (msg.type === "event") {
     const e = msg.event;
-    const tool = e.toolName ? ` ${e.toolName}` : "";
-    const gate = e.gateState ? ` [${e.gateState}]` : "";
-    console.log(`${ts()} #${e.seq} ${e.type}${tool}${gate}`);
+    if (e.type === "reasoning") {
+      console.log(`${ts()} #${e.seq} 💭 ${(e.payload as { text?: string })?.text ?? ""}`);
+    } else {
+      const tool = e.toolName ? ` ${e.toolName}` : "";
+      const gate = e.gateState ? ` [${e.gateState}]` : "";
+      console.log(`${ts()} #${e.seq} ${e.type}${tool}${gate}`);
+    }
   } else if (msg.type === "queue_state") {
     for (const p of msg.pending) {
       if (scheduled.has(p.editId)) continue;
