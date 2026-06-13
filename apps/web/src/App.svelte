@@ -3,7 +3,8 @@ import DiffView from "./lib/DiffView.svelte";
 import { GovernorConnection } from "./lib/connection.svelte.ts";
 
 const conn = new GovernorConnection();
-const wsUrl = import.meta.env.VITE_WS_URL ?? `ws://${location.hostname}:4318`;
+// Same-origin when served by the governor server (any --port); dev sets VITE_WS_URL.
+const wsUrl = import.meta.env.VITE_WS_URL ?? `ws://${location.host}`;
 conn.connect(wsUrl);
 
 const toggle = () => conn.setDial(conn.mode === "slowed" ? "realtime" : "slowed");
