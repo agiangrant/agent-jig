@@ -1,0 +1,16 @@
+{
+  "name": "@governor/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@governor/contracts": "workspace:*",
+    "picomatch": "^4.0.2"
+  },
+  "devDependencies": {
+    "@types/picomatch": "^3.0.1"
+  }
+}
