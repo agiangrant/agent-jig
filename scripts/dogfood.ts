@@ -34,6 +34,8 @@ ws.on("message", (raw) => {
     events.push(e);
     if (e.type === "reasoning") {
       console.log(`${ts()} #${e.seq} 💭 ${(e.payload as { text?: string })?.text ?? ""}`);
+    } else if (e.type === "narration") {
+      console.log(`${ts()} #${e.seq} 💬 ${(e.payload as { text?: string })?.text ?? ""}`);
     } else {
       const tool = e.toolName ? ` ${e.toolName}` : "";
       const gate = e.gateState ? ` [${e.gateState}]` : "";
@@ -57,6 +59,8 @@ ws.on("message", (raw) => {
 });
 
 await server.done;
+// Narration is async (a Haiku call per edit); give trailing ones a moment to land.
+await new Promise((r) => setTimeout(r, 4000));
 console.log(`${ts()} session done`);
 
 const pathOf = (editId: string): string => {

@@ -55,6 +55,11 @@ pnpm --filter @governor/web build                 # build the UI once (served by
 pnpm --filter @governor/cli start -- run "your task here" --repo /path/to/target
 ```
 
+**Narration** (per-edit "why" lines) uses a cheap model (Haiku) via the base Anthropic SDK,
+which needs an `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) — this is separate from the
+agent's own CLI auth. Without one, narration is silently off; set the key (or `GOVERNOR_NARRATE=0`
+to force off) to control it.
+
 Or, for UI development with hot reload, run the server and Vite separately:
 
 ```bash

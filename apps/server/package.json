@@ -13,6 +13,7 @@
     "@governor/agent-host": "workspace:*",
     "@governor/contracts": "workspace:*",
     "@governor/core": "workspace:*",
+    "@governor/narrator": "workspace:*",
     "@governor/store": "workspace:*",
     "@governor/structural": "workspace:*",
     "@governor/worktree": "workspace:*",

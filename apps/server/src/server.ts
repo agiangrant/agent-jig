@@ -9,7 +9,8 @@ import {
   type GovernorEvent,
   type Session,
 } from "@governor/contracts";
-import { Pacer } from "@governor/core";
+import { isWriteClass, Pacer } from "@governor/core";
+import { createNarrator } from "@governor/narrator";
 import { SqliteStorage } from "@governor/store";
 import { StructuralAnalyzer } from "@governor/structural";
 import { Worktree } from "@governor/worktree";
@@ -29,6 +30,8 @@ export interface ServerOptions {
   /** SQLite path. Defaults to `<repo>/.governor/governor.db`; `:memory:` for ephemeral. */
   dbPath?: string;
   mode?: DialMode;
+  /** Generate per-edit "why" narration (Haiku). Default on; off via GOVERNOR_NARRATE=0. */
+  narrate?: boolean;
   /** Absolute path to the built web bundle. Defaults to `apps/web/dist`. */
   webRoot?: string;
   /** Injectable SDK `query` for tests. */
@@ -76,10 +79,54 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
   const broadcastChangeView = () =>
     broadcaster.broadcast({ type: "change_view", view: changeView() });
 
+  // Narration uses the base Anthropic SDK (fast, one call/edit) and needs an
+  // ANTHROPIC_API_KEY/AUTH_TOKEN — separate from the agent's CLI auth. Without
+  // one, leave it off rather than firing a failing call per edit.
+  const hasKey = Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
+  const narrationOn =
+    (opts.narrate ?? !["0", "off", "false"].includes(process.env.GOVERNOR_NARRATE ?? "")) && hasKey;
+  const narrator = narrationOn ? createNarrator() : null;
+
+  // Generate a per-edit "why" off the hot path; emit it as a narration event when ready.
+  const narrate = (event: GovernorEvent): void => {
+    if (narrator === null || event.type !== "tool_call" || event.editId === null) return;
+    if (!isWriteClass(event.toolName ?? "")) return;
+    const editId = event.editId;
+    const p = (event.payload ?? {}) as {
+      file_path?: string;
+      old_string?: string;
+      new_string?: string;
+      content?: string;
+    };
+    void (async () => {
+      const prior = store.listEvents(session.id);
+      const reasoning = [...prior]
+        .reverse()
+        .find((e) => e.type === "reasoning" && e.seq < event.seq);
+      const text = await narrator.narrate({
+        toolName: event.toolName ?? "",
+        path: p.file_path ?? "",
+        before: p.old_string ?? "",
+        after: p.new_string ?? p.content ?? "",
+        reasoning: ((reasoning?.payload ?? {}) as { text?: string }).text ?? "",
+      });
+      if (text !== null) {
+        const ev = store.appendEvent({
+          sessionId: session.id,
+          type: "narration",
+          editId,
+          payload: { text },
+        });
+        broadcaster.broadcast({ type: "event", event: ev });
+      }
+    })();
+  };
+
   const onEvent = (event: GovernorEvent) => {
     broadcaster.broadcast({ type: "event", event });
     // Grouping and analysis only shift on reasoning and edits.
     if (event.type === "reasoning" || event.type === "tool_call") broadcastChangeView();
+    narrate(event);
   };
 
   pacer.onQueueChange = (pending) => broadcaster.broadcast({ type: "queue_state", pending });

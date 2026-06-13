@@ -51,6 +51,9 @@ importers:
       '@governor/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@governor/narrator':
+        specifier: workspace:*
+        version: link:../../packages/narrator
       '@governor/store':
         specifier: workspace:*
         version: link:../../packages/store
@@ -126,6 +129,12 @@ importers:
       '@types/picomatch':
         specifier: ^3.0.1
         version: 3.0.2
+
+  packages/narrator:
+    dependencies:
+      '@anthropic-ai/sdk':
+        specifier: ^0.104.1
+        version: 0.104.1(zod@3.25.76)
 
   packages/store:
     dependencies:

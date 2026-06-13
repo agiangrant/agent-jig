@@ -16,6 +16,11 @@ function filePath(payload: unknown): string {
   return ((payload ?? {}) as { file_path?: string }).file_path ?? "";
 }
 
+function narrationFor(editId: string): string {
+  const e = conn.events.find((x) => x.type === "narration" && x.editId === editId);
+  return ((e?.payload ?? {}) as { text?: string }).text ?? "";
+}
+
 const toggle = () => conn.setDial(conn.mode === "slowed" ? "realtime" : "slowed");
 
 function riskLabel(r: number): "high" | "med" | "low" {
@@ -88,6 +93,9 @@ function reasonText(p: unknown): string {
             <div class="edit collapsed">
               <span class="badge">⊟ {g.pattern.count} structurally identical edits</span>
               <code>{filePath(rep?.payload)} + {g.pattern.count - 1} more</code>
+              {#if narrationFor(g.pattern.editIds[0] ?? "")}
+                <p class="why-line">💬 {narrationFor(g.pattern.editIds[0] ?? "")}</p>
+              {/if}
               <DiffView toolName={rep?.toolName ?? ""} payload={rep?.payload} />
             </div>
             {#each g.outliers as id (id)}
@@ -95,6 +103,7 @@ function reasonText(p: unknown): string {
               <div class="edit outlier">
                 <span class="badge warn">⚠ differs from the pattern — worth a look</span>
                 <code>{filePath(e?.payload)}</code>
+                {#if narrationFor(id)}<p class="why-line">💬 {narrationFor(id)}</p>{/if}
                 <DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />
               </div>
             {/each}
@@ -103,6 +112,7 @@ function reasonText(p: unknown): string {
               {@const e = editEvent(id)}
               <div class="edit">
                 <code>{filePath(e?.payload)}</code>
+                {#if narrationFor(id)}<p class="why-line">💬 {narrationFor(id)}</p>{/if}
                 <DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />
               </div>
             {/each}
@@ -347,5 +357,11 @@ function reasonText(p: unknown): string {
   .edit.outlier {
     border-left: 2px solid var(--warn);
     padding-left: 10px;
+  }
+  .why-line {
+    color: var(--accent);
+    font-style: italic;
+    margin: 6px 0;
+    opacity: 0.9;
   }
 </style>
