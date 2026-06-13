@@ -7,7 +7,7 @@ const repo = process.argv[2] ?? process.cwd();
 const task =
   process.argv[3] ??
   "Add a one-line JSDoc comment above each function and method in the TypeScript files under src/, describing what it does. Do not change any logic.";
-const ACK_DELAY_MS = 800;
+const ACK_DELAY_MS = Number(process.env.ACK_DELAY_MS ?? 800);
 
 const t0 = Date.now();
 const ts = () => `+${((Date.now() - t0) / 1000).toFixed(1)}s`;

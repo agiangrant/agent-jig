@@ -16,10 +16,12 @@ and the steering channel are all *views over that log*. Don't invent parallel st
   SQLite. The pacing semaphore (`Pacer` in `@governor/core`) is therefore plain in-memory — **no IPC**.
 - **Backpressure** = the SDK `canUseTool` callback `await`s `Pacer.requestGate()` for write-class
   tools; the UI's `ack_edit` resolves it. Read/search/test tools pass freely ("backpressure on
-  writes, not on thought").
-- **Steering** (Phase 3) = `query.streamInput()` injects directives, applied at the next tool-call
-  boundary. **Caveat:** SDK hooks have a configurable timeout (default 60s) — long human pauses need
-  a generous `gateTimeoutMs` and/or the `defer`→resume fallback. Validate this in Phase 1.
+  writes, not on thought"). An `allow` result MUST echo `updatedInput` or the SDK rejects the tool
+  (see `agent-host/src/gate.ts`). **Validated:** `canUseTool` blocks *indefinitely* — held a live
+  agent 75s with no timeout — so the 60s `PreToolUse`-hook timeout does NOT apply here. No
+  defer/resume fallback needed; `config.gateTimeoutMs` is reserved for a future idle-policy, unused.
+- **Steering** (Phase 3) = a controllable `AsyncIterable` prompt injects directives at the next
+  tool-call boundary (the `Query` object has `interrupt`/`setPermissionMode`, not a `streamInput`).
 - Every tool call is observable on the async message iterator (`assistant` messages carry
   `tool_use` blocks) — that is the event source.
 
