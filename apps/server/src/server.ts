@@ -135,6 +135,36 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
     broadcaster.broadcast({ type: "dial_state", mode });
   };
 
+  const running = runGovernedSession({
+    session,
+    prompt: opts.prompt,
+    pacer,
+    store,
+    worktree: new Worktree(repoPath),
+    onEvent,
+    queryImpl: opts.queryImpl,
+  });
+
+  // Inject a human directive into the agent, anchored to an edit's path when given.
+  const sendDirective = (text: string, anchorEditId: string | null) => {
+    let composed = text;
+    if (anchorEditId !== null) {
+      const call = store
+        .listEvents(session.id)
+        .find((e) => e.type === "tool_call" && e.editId === anchorEditId);
+      const path = ((call?.payload ?? {}) as { file_path?: string }).file_path;
+      if (path) composed = `Re: your edit to ${path} — ${text}`;
+    }
+    running.sendDirective(composed);
+    const event = store.appendEvent({
+      sessionId: session.id,
+      type: "directive",
+      editId: anchorEditId,
+      payload: { text: composed },
+    });
+    broadcaster.broadcast({ type: "event", event });
+  };
+
   const app = new Hono();
   app.get("/healthz", (c) => c.json({ ok: true, session: session.id }));
   app.get("/*", serveWeb(opts.webRoot ?? defaultWebRoot()));
@@ -170,17 +200,8 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
       const msg = parsed.data;
       if (msg.type === "set_dial") pacer.setMode(msg.mode);
       else if (msg.type === "ack_edit") pacer.ack(msg.editId);
+      else if (msg.type === "send_directive") sendDirective(msg.text, msg.anchorEditId);
     });
-  });
-
-  const running = runGovernedSession({
-    session,
-    prompt: opts.prompt,
-    pacer,
-    store,
-    worktree: new Worktree(repoPath),
-    onEvent,
-    queryImpl: opts.queryImpl,
   });
 
   return {

@@ -179,5 +179,10 @@ export type ServerToClient = z.infer<typeof ServerToClient>;
 export const ClientToServer = z.discriminatedUnion("type", [
   z.object({ type: z.literal("set_dial"), mode: DialMode }),
   z.object({ type: z.literal("ack_edit"), editId: z.string() }),
+  z.object({
+    type: z.literal("send_directive"),
+    text: z.string(),
+    anchorEditId: z.string().nullable().default(null),
+  }),
 ]);
 export type ClientToServer = z.infer<typeof ClientToServer>;

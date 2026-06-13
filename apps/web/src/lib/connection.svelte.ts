@@ -62,4 +62,8 @@ export class GovernorConnection {
   ack(editId: string): void {
     this.#send({ type: "ack_edit", editId });
   }
+
+  sendDirective(text: string, anchorEditId: string | null = null): void {
+    this.#send({ type: "send_directive", text, anchorEditId });
+  }
 }

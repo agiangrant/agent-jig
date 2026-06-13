@@ -23,6 +23,14 @@ function narrationFor(editId: string): string {
 
 const toggle = () => conn.setDial(conn.mode === "slowed" ? "realtime" : "slowed");
 
+let directive = $state("");
+function steer() {
+  const text = directive.trim();
+  if (!text) return;
+  conn.sendDirective(text);
+  directive = "";
+}
+
 function riskLabel(r: number): "high" | "med" | "low" {
   if (r >= 0.8) return "high";
   if (r >= 0.4) return "med";
@@ -58,6 +66,21 @@ function reasonText(p: unknown): string {
   {#if conn.session}
     <p class="task">{conn.session.taskPrompt}</p>
   {/if}
+
+  <form
+    class="steer"
+    onsubmit={(e) => {
+      e.preventDefault();
+      steer();
+    }}
+  >
+    <input
+      type="text"
+      bind:value={directive}
+      placeholder="Steer the agent — e.g. use the categories from config/taxonomy.json"
+    />
+    <button type="submit">Send</button>
+  </form>
 
   <section class="queue">
     <h2>Queue <span class="count">{conn.queue.length}</span></h2>
@@ -136,6 +159,12 @@ function reasonText(p: unknown): string {
           <li class="reason">
             <span class="seq">#{ev.seq}</span>
             <span class="why">{reasonText(ev.payload)}</span>
+          </li>
+        {:else if ev.type === "directive"}
+          <li class="directive">
+            <span class="seq">#{ev.seq}</span>
+            <span class="arrow">→ steer</span>
+            <span class="dtext">{reasonText(ev.payload)}</span>
           </li>
         {:else}
           <li>
@@ -363,5 +392,37 @@ function reasonText(p: unknown): string {
     font-style: italic;
     margin: 6px 0;
     opacity: 0.9;
+  }
+
+  .steer {
+    display: flex;
+    gap: 8px;
+    margin: 14px 0;
+  }
+  .steer input {
+    flex: 1;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 12px;
+    color: var(--fg);
+    font: inherit;
+  }
+  .steer button {
+    background: var(--accent);
+    color: #0c0d12;
+    border: 0;
+    border-radius: 8px;
+    padding: 0 16px;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 600;
+  }
+  .directive .arrow {
+    color: var(--accent);
+    font-weight: 600;
+  }
+  .directive .dtext {
+    color: var(--fg);
   }
 </style>

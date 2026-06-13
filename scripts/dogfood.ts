@@ -22,7 +22,9 @@ const server = await startGovernorServer({
 });
 console.log(`${ts()} server up at ${server.url} (mode: slowed)`);
 
+const STEER = process.env.GOVERNOR_STEER; // inject this directive once, after the first edit
 const scheduled = new Set<string>();
+let steered = false;
 const events: GovernorEvent[] = [];
 let changeView: ChangeView = [];
 const ws = new WebSocket(server.url.replace("http", "ws"));
@@ -36,6 +38,8 @@ ws.on("message", (raw) => {
       console.log(`${ts()} #${e.seq} 💭 ${(e.payload as { text?: string })?.text ?? ""}`);
     } else if (e.type === "narration") {
       console.log(`${ts()} #${e.seq} 💬 ${(e.payload as { text?: string })?.text ?? ""}`);
+    } else if (e.type === "directive") {
+      console.log(`${ts()} #${e.seq} 📨 ${(e.payload as { text?: string })?.text ?? ""}`);
     } else {
       const tool = e.toolName ? ` ${e.toolName}` : "";
       const gate = e.gateState ? ` [${e.gateState}]` : "";
@@ -53,6 +57,15 @@ ws.on("message", (raw) => {
       setTimeout(() => {
         console.log(`${ts()}   ✅ ACK ${p.path}`);
         ws.send(JSON.stringify({ type: "ack_edit", editId: p.editId }));
+        if (STEER && !steered) {
+          steered = true;
+          setTimeout(() => {
+            console.log(`${ts()}   ✍️  STEER: "${STEER}"`);
+            ws.send(
+              JSON.stringify({ type: "send_directive", text: STEER, anchorEditId: p.editId }),
+            );
+          }, 1200);
+        }
       }, ACK_DELAY_MS);
     }
   }
