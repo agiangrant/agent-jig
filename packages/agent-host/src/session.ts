@@ -3,7 +3,9 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { GovernorEvent, Session } from "@governor/contracts";
 import type { Pacer } from "@governor/core";
 import type { Storage } from "@governor/store";
+import type { Worktree } from "@governor/worktree";
 import { makeCanUseTool } from "./gate.ts";
+import { ProvenanceTracker } from "./provenance.ts";
 
 export interface RunSessionDeps {
   session: Session;
@@ -15,6 +17,8 @@ export interface RunSessionDeps {
   options?: Partial<Options>;
   /** Injectable for tests; defaults to the real SDK `query`. */
   queryImpl?: typeof query;
+  /** When set, flags working-tree changes the agent's gated tools didn't make. */
+  worktree?: Worktree;
 }
 
 export interface RunningSession {
@@ -31,11 +35,13 @@ export interface RunningSession {
  */
 export function runGovernedSession(deps: RunSessionDeps): RunningSession {
   const { session, store, onEvent } = deps;
+  const tracker = deps.worktree ? new ProvenanceTracker(deps.worktree) : undefined;
   const canUseTool = makeCanUseTool({
     sessionId: session.id,
     pacer: deps.pacer,
     store,
     onEvent,
+    tracker,
   });
 
   const runner = (deps.queryImpl ?? query)({
@@ -62,6 +68,15 @@ export function runGovernedSession(deps: RunSessionDeps): RunningSession {
         if (message.type === "result") {
           store.appendEvent({ sessionId: session.id, type: "tool_result", payload: message });
         }
+      }
+      const oob = tracker?.finalize();
+      if (oob) {
+        const event = store.appendEvent({
+          sessionId: session.id,
+          type: "out_of_band_change",
+          payload: oob,
+        });
+        onEvent?.(event);
       }
       store.setSessionStatus(session.id, "done", Date.now());
     } catch (error) {

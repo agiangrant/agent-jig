@@ -3,6 +3,7 @@ import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 import type { GovernorEvent } from "@governor/contracts";
 import { extractPath, isWriteClass, type Pacer, scoreRisk } from "@governor/core";
 import type { Storage } from "@governor/store";
+import type { ProvenanceTracker } from "./provenance.ts";
 
 export interface GateDeps {
   sessionId: string;
@@ -10,6 +11,8 @@ export interface GateDeps {
   store: Storage;
   /** Fired per appended event so the server can push it to the UI. */
   onEvent?: (event: GovernorEvent) => void;
+  /** Detects working-tree changes the agent's gated tools didn't make. */
+  tracker?: ProvenanceTracker;
 }
 
 /**
@@ -19,10 +22,23 @@ export interface GateDeps {
  * else is logged and allowed at once.
  */
 export function makeCanUseTool(deps: GateDeps): CanUseTool {
-  const { sessionId, pacer, store, onEvent } = deps;
+  const { sessionId, pacer, store, onEvent, tracker } = deps;
   const config = store.getConfig();
 
   return async (toolName, input) => {
+    // Surface anything that changed the working tree since the last write
+    // (Bash, the human, a formatter) before this tool's own event.
+    const oob = tracker?.observe(toolName, input) ?? null;
+    if (oob !== null) {
+      const oobEvent = store.appendEvent({
+        sessionId,
+        type: "out_of_band_change",
+        toolName,
+        payload: oob,
+      });
+      onEvent?.(oobEvent);
+    }
+
     const write = isWriteClass(toolName);
     const path = extractPath(input);
     const assessment = path ? scoreRisk(path, config.riskRules, config.defaultMode) : null;

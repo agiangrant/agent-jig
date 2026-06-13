@@ -6,6 +6,7 @@ import { type RunSessionDeps, runGovernedSession } from "@governor/agent-host";
 import { ClientToServer, type DialMode, type Session } from "@governor/contracts";
 import { Pacer } from "@governor/core";
 import { SqliteStorage } from "@governor/store";
+import { Worktree } from "@governor/worktree";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { WebSocketServer } from "ws";
@@ -109,6 +110,7 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
     prompt: opts.prompt,
     pacer,
     store,
+    worktree: new Worktree(repoPath),
     onEvent: (event) => broadcaster.broadcast({ type: "event", event }),
     queryImpl: opts.queryImpl,
   });

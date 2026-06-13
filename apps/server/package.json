@@ -14,6 +14,7 @@
     "@governor/contracts": "workspace:*",
     "@governor/core": "workspace:*",
     "@governor/store": "workspace:*",
+    "@governor/worktree": "workspace:*",
     "@hono/node-server": "^2.0.4",
     "hono": "^4.12.25",
     "ws": "^8.21.0"

@@ -37,11 +37,25 @@ export const EventType = z.enum([
   "tool_result",
   "dial_change",
   "ack",
+  "out_of_band_change", // a working-tree change the agent's gated tools didn't make
   "narration", // Phase 2
   "directive", // Phase 3
   "session_end",
 ]);
 export type EventType = z.infer<typeof EventType>;
+
+/** A working-tree change not produced by a gated Edit/Write/MultiEdit. */
+export const FileChange = z.object({
+  path: z.string(),
+  kind: z.enum(["modified", "added", "deleted"]),
+});
+export type FileChange = z.infer<typeof FileChange>;
+
+export const OutOfBandChange = z.object({
+  attributedTo: z.enum(["bash", "external"]),
+  files: z.array(FileChange),
+});
+export type OutOfBandChange = z.infer<typeof OutOfBandChange>;
 
 /** Append-only, ordered per-session by `seq`. The three projections are views over this. */
 export const GovernorEvent = z.object({

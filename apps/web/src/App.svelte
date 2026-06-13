@@ -19,6 +19,11 @@ function riskLabel(r: number): "high" | "med" | "low" {
 function payloadFor(editId: string): unknown {
   return conn.events.find((e) => e.editId === editId && e.type === "tool_call")?.payload;
 }
+
+function outOfBand(p: unknown): { attributedTo: string; files: { path: string; kind: string }[] } {
+  const v = (p ?? {}) as { attributedTo?: string; files?: { path: string; kind: string }[] };
+  return { attributedTo: v.attributedTo ?? "external", files: v.files ?? [] };
+}
 </script>
 
 <main>
@@ -61,12 +66,20 @@ function payloadFor(editId: string): unknown {
     <h2>Timeline</h2>
     <ol>
       {#each conn.events as ev (ev.id)}
-        <li>
-          <span class="seq">#{ev.seq}</span>
-          <span class="type">{ev.type}</span>
-          {#if ev.toolName}<span class="tool">{ev.toolName}</span>{/if}
-          {#if ev.gateState}<span class="gate {ev.gateState}">{ev.gateState}</span>{/if}
-        </li>
+        {#if ev.type === "out_of_band_change"}
+          <li class="oob">
+            <span class="seq">#{ev.seq}</span>
+            <span class="warn">⚠ changed outside the agent ({outOfBand(ev.payload).attributedTo})</span>
+            <span class="files">{outOfBand(ev.payload).files.map((f) => f.path).join(", ")}</span>
+          </li>
+        {:else}
+          <li>
+            <span class="seq">#{ev.seq}</span>
+            <span class="type">{ev.type}</span>
+            {#if ev.toolName}<span class="tool">{ev.toolName}</span>{/if}
+            {#if ev.gateState}<span class="gate {ev.gateState}">{ev.gateState}</span>{/if}
+          </li>
+        {/if}
       {/each}
     </ol>
   </section>
@@ -228,5 +241,12 @@ function payloadFor(editId: string): unknown {
   }
   .gate.bypassed {
     color: var(--muted);
+  }
+
+  .oob .warn {
+    color: var(--warn);
+  }
+  .oob .files {
+    color: var(--fg);
   }
 </style>
