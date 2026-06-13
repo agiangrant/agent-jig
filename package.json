@@ -7,7 +7,6 @@
   "engines": {
     "node": ">=24"
   },
-  "packageManager": "pnpm@11.6.0",
   "scripts": {
     "check": "biome check .",
     "check:fix": "biome check --write .",
