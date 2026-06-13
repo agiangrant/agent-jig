@@ -40,6 +40,17 @@ function defaultWebRoot(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "../../web/dist");
 }
 
+/** True for same-machine browser origins (any port) and non-browser clients (no Origin). */
+function isLocalOrigin(origin: string | undefined): boolean {
+  if (!origin) return true;
+  try {
+    const { hostname } = new URL(origin);
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  } catch {
+    return false;
+  }
+}
+
 export async function startGovernorServer(opts: ServerOptions): Promise<RunningServer> {
   const repoPath = resolve(opts.repoPath);
   const dbPath = opts.dbPath ?? join(repoPath, ".governor", "governor.db");
@@ -67,7 +78,14 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
     );
   });
 
-  const wss = new WebSocketServer({ server: httpServer as unknown as Server });
+  // Reject Cross-Site WebSocket Hijacking: a browser always sends Origin on the
+  // handshake, so an allowlist of local origins blocks pages on remote sites from
+  // reading the event log or driving the gate. Non-browser clients (CLI, tests)
+  // send no Origin and are trusted, since they already have local machine access.
+  const wss = new WebSocketServer({
+    server: httpServer as unknown as Server,
+    verifyClient: ({ origin }: { origin?: string }) => isLocalOrigin(origin),
+  });
   wss.on("connection", (ws) => {
     // Snapshot the current state so a late joiner catches up (synchronous: no event can interleave).
     broadcaster.send(ws, { type: "session_state", session });

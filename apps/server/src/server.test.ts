@@ -62,4 +62,26 @@ describe("startGovernorServer", () => {
 
     ws.close();
   });
+
+  it("rejects a websocket handshake from a foreign origin (CSWSH guard)", async () => {
+    server = await startGovernorServer({
+      repoPath: tmpdir(),
+      prompt: "t",
+      port: 0,
+      dbPath: ":memory:",
+      queryImpl,
+    });
+
+    const ws = new WebSocket(server.url.replace("http", "ws"), {
+      origin: "http://evil.example",
+    });
+    const outcome = await new Promise<"open" | "rejected">((res) => {
+      ws.on("open", () => res("open"));
+      ws.on("error", () => res("rejected"));
+      ws.on("unexpected-response", () => res("rejected"));
+    });
+
+    expect(outcome).toBe("rejected");
+    ws.close();
+  });
 });
