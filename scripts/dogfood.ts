@@ -1,7 +1,6 @@
 // Dev harness: run a real governed session and auto-ack each gated edit after a
 // short beat, to demonstrate the live backpressure loop. Not part of the product.
-import type { GovernorEvent } from "@governor/contracts";
-import { groupByIntent } from "@governor/core";
+import type { ChangeView, GovernorEvent } from "@governor/contracts";
 import { startGovernorServer } from "@governor/server";
 import { WebSocket } from "ws";
 
@@ -25,6 +24,7 @@ console.log(`${ts()} server up at ${server.url} (mode: slowed)`);
 
 const scheduled = new Set<string>();
 const events: GovernorEvent[] = [];
+let changeView: ChangeView = [];
 const ws = new WebSocket(server.url.replace("http", "ws"));
 
 ws.on("message", (raw) => {
@@ -39,6 +39,8 @@ ws.on("message", (raw) => {
       const gate = e.gateState ? ` [${e.gateState}]` : "";
       console.log(`${ts()} #${e.seq} ${e.type}${tool}${gate}`);
     }
+  } else if (msg.type === "change_view") {
+    changeView = msg.view;
   } else if (msg.type === "queue_state") {
     for (const p of msg.pending) {
       if (scheduled.has(p.editId)) continue;
@@ -57,14 +59,19 @@ ws.on("message", (raw) => {
 await server.done;
 console.log(`${ts()} session done`);
 
-const groups = groupByIntent(events);
-console.log(`\n=== ${groups.length} intent group(s) ===`);
-for (const g of groups) {
+const pathOf = (editId: string): string => {
+  const e = events.find((x) => x.editId === editId);
+  return ((e?.payload ?? {}) as { file_path?: string }).file_path ?? "";
+};
+
+console.log(`\n=== ${changeView.length} intent group(s) ===`);
+for (const g of changeView) {
   console.log(`▸ ${g.label}`);
-  for (const id of g.editIds) {
-    const e = events.find((x) => x.editId === id);
-    const path = ((e?.payload ?? {}) as { file_path?: string }).file_path ?? "";
-    console.log(`    - ${e?.toolName} ${path}`);
+  if (g.pattern) {
+    console.log(`    ⊟ ${g.pattern.count} structurally identical edits (collapsed)`);
+    for (const id of g.outliers) console.log(`    ⚠ outlier: ${pathOf(id)}`);
+  } else {
+    for (const id of g.editIds) console.log(`    - ${pathOf(id)}`);
   }
 }
 

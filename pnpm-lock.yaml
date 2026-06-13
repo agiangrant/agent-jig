@@ -54,6 +54,9 @@ importers:
       '@governor/store':
         specifier: workspace:*
         version: link:../../packages/store
+      '@governor/structural':
+        specifier: workspace:*
+        version: link:../../packages/structural
       '@governor/worktree':
         specifier: workspace:*
         version: link:../../packages/worktree
@@ -76,9 +79,6 @@ importers:
       '@governor/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
-      '@governor/core':
-        specifier: workspace:*
-        version: link:../../packages/core
     devDependencies:
       '@sveltejs/vite-plugin-svelte':
         specifier: ^7.1.2

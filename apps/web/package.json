@@ -9,8 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@governor/contracts": "workspace:*",
-    "@governor/core": "workspace:*"
+    "@governor/contracts": "workspace:*"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.1.2",

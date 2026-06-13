@@ -1,6 +1,5 @@
 <script lang="ts">
 import type { GovernorEvent } from "@governor/contracts";
-import { groupByIntent } from "@governor/core";
 import DiffView from "./lib/DiffView.svelte";
 import { GovernorConnection } from "./lib/connection.svelte.ts";
 
@@ -8,8 +7,6 @@ const conn = new GovernorConnection();
 // Same-origin when served by the governor server (any --port); dev sets VITE_WS_URL.
 const wsUrl = import.meta.env.VITE_WS_URL ?? `ws://${location.host}`;
 conn.connect(wsUrl);
-
-const groups = $derived(groupByIntent(conn.events));
 
 function editEvent(editId: string): GovernorEvent | undefined {
   return conn.events.find((e) => e.editId === editId && e.type === "tool_call");
@@ -80,19 +77,36 @@ function reasonText(p: unknown): string {
 
   <section class="changes">
     <h2>Changes by intent</h2>
-    {#if groups.length === 0}
+    {#if conn.changeView.length === 0}
       <p class="empty">No edits yet.</p>
     {:else}
-      {#each groups as g (g.id)}
+      {#each conn.changeView as g (g.id)}
         <div class="group">
           <p class="label">{g.label}</p>
-          {#each g.editIds as id (id)}
-            {@const e = editEvent(id)}
-            <div class="edit">
-              <code>{filePath(e?.payload)}</code>
-              <DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />
+          {#if g.pattern}
+            {@const rep = editEvent(g.pattern.editIds[0] ?? "")}
+            <div class="edit collapsed">
+              <span class="badge">⊟ {g.pattern.count} structurally identical edits</span>
+              <code>{filePath(rep?.payload)} + {g.pattern.count - 1} more</code>
+              <DiffView toolName={rep?.toolName ?? ""} payload={rep?.payload} />
             </div>
-          {/each}
+            {#each g.outliers as id (id)}
+              {@const e = editEvent(id)}
+              <div class="edit outlier">
+                <span class="badge warn">⚠ differs from the pattern — worth a look</span>
+                <code>{filePath(e?.payload)}</code>
+                <DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />
+              </div>
+            {/each}
+          {:else}
+            {#each g.editIds as id (id)}
+              {@const e = editEvent(id)}
+              <div class="edit">
+                <code>{filePath(e?.payload)}</code>
+                <DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />
+              </div>
+            {/each}
+          {/if}
         </div>
       {/each}
     {/if}
@@ -316,5 +330,22 @@ function reasonText(p: unknown): string {
   .group .edit code {
     color: var(--muted);
     font-size: 12px;
+  }
+  .badge {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    margin-right: 8px;
+  }
+  .badge.warn {
+    color: var(--warn);
+    border-color: var(--warn);
+  }
+  .edit.outlier {
+    border-left: 2px solid var(--warn);
+    padding-left: 10px;
   }
 </style>

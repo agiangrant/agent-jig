@@ -3,14 +3,21 @@ import type { Server } from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type RunSessionDeps, runGovernedSession } from "@governor/agent-host";
-import { ClientToServer, type DialMode, type Session } from "@governor/contracts";
+import {
+  ClientToServer,
+  type DialMode,
+  type GovernorEvent,
+  type Session,
+} from "@governor/contracts";
 import { Pacer } from "@governor/core";
 import { SqliteStorage } from "@governor/store";
+import { StructuralAnalyzer } from "@governor/structural";
 import { Worktree } from "@governor/worktree";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { WebSocketServer } from "ws";
 import { Broadcaster } from "./broadcaster.ts";
+import { buildChangeView } from "./changeView.ts";
 import { serveWeb } from "./static.ts";
 
 const DEFAULT_PORT = 4318;
@@ -62,6 +69,19 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
   const broadcaster = new Broadcaster();
   const session = store.createSession({ repoPath, taskPrompt: opts.prompt });
 
+  // The change view's AST analysis is best-effort: if the WASM grammars fail to
+  // load, groups still render without collapse/outlier marks.
+  const analyzer = await StructuralAnalyzer.create().catch(() => null);
+  const changeView = () => buildChangeView(store.listEvents(session.id), analyzer);
+  const broadcastChangeView = () =>
+    broadcaster.broadcast({ type: "change_view", view: changeView() });
+
+  const onEvent = (event: GovernorEvent) => {
+    broadcaster.broadcast({ type: "event", event });
+    // Grouping and analysis only shift on reasoning and edits.
+    if (event.type === "reasoning" || event.type === "tool_call") broadcastChangeView();
+  };
+
   pacer.onQueueChange = (pending) => broadcaster.broadcast({ type: "queue_state", pending });
   pacer.onModeChange = (mode) => {
     store.appendEvent({ sessionId: session.id, type: "dial_change", payload: { mode } });
@@ -94,6 +114,7 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
     broadcaster.send(ws, { type: "queue_state", pending: pacer.queue });
     for (const event of store.listEvents(session.id))
       broadcaster.send(ws, { type: "event", event });
+    broadcaster.send(ws, { type: "change_view", view: changeView() });
     broadcaster.add(ws);
 
     ws.on("message", (raw) => {
@@ -111,7 +132,7 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
     pacer,
     store,
     worktree: new Worktree(repoPath),
-    onEvent: (event) => broadcaster.broadcast({ type: "event", event }),
+    onEvent,
     queryImpl: opts.queryImpl,
   });
 

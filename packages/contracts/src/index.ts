@@ -83,6 +83,22 @@ export const IntentGroup = z.object({
 });
 export type IntentGroup = z.infer<typeof IntentGroup>;
 
+/**
+ * An intent group enriched with AST-sameness analysis. `pattern` is the cluster
+ * of structurally-identical edits to collapse; `outliers` deviate from it.
+ */
+export const ChangeViewGroup = z.object({
+  id: z.string(),
+  label: z.string(),
+  editIds: z.array(z.string()),
+  pattern: z.object({ editIds: z.array(z.string()), count: z.number().int() }).nullable(),
+  outliers: z.array(z.string()),
+});
+export type ChangeViewGroup = z.infer<typeof ChangeViewGroup>;
+
+export const ChangeView = z.array(ChangeViewGroup);
+export type ChangeView = z.infer<typeof ChangeView>;
+
 // --- Config & blast-radius defaults ---
 
 /** Path glob → starting dial mode. High-risk targets auto-downshift; manual override wins. */
@@ -156,6 +172,7 @@ export const ServerToClient = z.discriminatedUnion("type", [
   z.object({ type: z.literal("event"), event: GovernorEvent }),
   z.object({ type: z.literal("queue_state"), pending: z.array(PendingEdit) }),
   z.object({ type: z.literal("dial_state"), mode: DialMode }),
+  z.object({ type: z.literal("change_view"), view: ChangeView }),
 ]);
 export type ServerToClient = z.infer<typeof ServerToClient>;
 

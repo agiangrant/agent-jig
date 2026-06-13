@@ -1,4 +1,5 @@
 import type {
+  ChangeView,
   ClientToServer,
   DialMode,
   GovernorEvent,
@@ -13,6 +14,7 @@ export class GovernorConnection {
   mode = $state<DialMode>("slowed");
   queue = $state<PendingEdit[]>([]);
   events = $state<GovernorEvent[]>([]);
+  changeView = $state<ChangeView>([]);
   connected = $state(false);
 
   #ws: WebSocket | null = null;
@@ -42,6 +44,9 @@ export class GovernorConnection {
         break;
       case "event":
         this.events = [...this.events, msg.event];
+        break;
+      case "change_view":
+        this.changeView = msg.view;
         break;
     }
   }
