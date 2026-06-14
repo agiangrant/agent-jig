@@ -31,6 +31,8 @@ export interface Storage {
   listSessions(): Session[];
   setSessionStatus(id: string, status: SessionStatus, endedAt?: number | null): void;
   setSessionTitle(id: string, title: string): void;
+  /** Permanently remove a session and its events. */
+  deleteSession(id: string): void;
   /** The SDK's own session id, captured for cross-process resume. */
   setClaudeSessionId(id: string, claudeId: string): void;
   getClaudeSessionId(id: string): string | null;

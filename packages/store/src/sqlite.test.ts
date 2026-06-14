@@ -44,6 +44,15 @@ describe("SqliteStorage", () => {
     expect(store.getClaudeSessionId(s.id)).toBe("claude-abc");
   });
 
+  it("deletes a session and its events", () => {
+    const s = store.createSession({ repoPath: "/r", taskPrompt: "t" });
+    store.appendEvent({ sessionId: s.id, type: "session_start", payload: {} });
+    store.deleteSession(s.id);
+    expect(store.getSession(s.id)).toBeNull();
+    expect(store.listEvents(s.id)).toEqual([]);
+    expect(store.listSessions()).toEqual([]);
+  });
+
   it("assigns monotonic per-session seq numbers", () => {
     const a = store.createSession({ repoPath: "/a", taskPrompt: "t" });
     const b = store.createSession({ repoPath: "/b", taskPrompt: "t" });

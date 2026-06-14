@@ -78,6 +78,8 @@ export class GovernedSession {
   /** The agent's open question (if any) and the resolver that answers it. */
   private question: PendingQuestion | null = null;
   private answerQuestion: ((message: string) => void) | null = null;
+  /** Set once the human renames the session, so the LLM title won't overwrite it. */
+  private titleManual = false;
 
   constructor(deps: GovernedSessionDeps) {
     this.id = deps.session.id;
@@ -147,11 +149,19 @@ export class GovernedSession {
     const narrator = this.narrator;
     if (narrator === null) return;
     void narrator.title(prompt).then((title) => {
-      if (title) {
+      // A manual rename wins over the (later-arriving) generated title.
+      if (title && !this.titleManual) {
         this.store.setSessionTitle(this.id, title);
         this.broadcaster.broadcast({ type: "session_state", session: this.meta() });
       }
     });
+  }
+
+  /** Human rename — sticks, and blocks any pending generated title. */
+  setTitle(title: string): void {
+    this.titleManual = true;
+    this.store.setSessionTitle(this.id, title);
+    this.broadcaster.broadcast({ type: "session_state", session: this.meta() });
   }
 
   meta(): Session {

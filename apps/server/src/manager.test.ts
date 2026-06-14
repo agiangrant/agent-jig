@@ -71,6 +71,41 @@ describe("SessionManager.restore", () => {
     await mgr.closeAll();
   });
 
+  it("removes a session from the manager and the store", async () => {
+    store = new SqliteStorage(":memory:");
+    const mgr = new SessionManager({
+      store,
+      analyzer: null,
+      narrator: null,
+      queryImpl: recordingQuery([]),
+    });
+    const created = mgr.create({ repoPath: tmpdir(), prompt: "t" });
+    await tick();
+
+    await mgr.remove(created.id);
+
+    expect(mgr.list().map((x) => x.id)).not.toContain(created.id);
+    expect(store.getSession(created.id)).toBeNull();
+  });
+
+  it("renames a hosted session and reports missing ones", async () => {
+    store = new SqliteStorage(":memory:");
+    const mgr = new SessionManager({
+      store,
+      analyzer: null,
+      narrator: null,
+      queryImpl: recordingQuery([]),
+    });
+    const created = mgr.create({ repoPath: tmpdir(), prompt: "t" });
+
+    expect(mgr.rename(created.id, "My Title")).toBe(true);
+    expect(store.getSession(created.id)?.title).toBe("My Title");
+    expect(mgr.rename("nope", "x")).toBe(false);
+
+    await tick();
+    await mgr.closeAll();
+  });
+
   it("does not resume a stale running session — marks it paused", async () => {
     store = new SqliteStorage(":memory:");
     const s = store.createSession({ repoPath: tmpdir(), taskPrompt: "t" });

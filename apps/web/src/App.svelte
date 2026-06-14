@@ -71,6 +71,41 @@ function select(id: string) {
 void loadSessions();
 setInterval(loadSessions, 3000);
 
+// --- Rename / close tabs ---
+let editing = $state<string | null>(null);
+let renameText = $state("");
+function focusOnMount(node: HTMLInputElement) {
+  node.focus();
+  node.select();
+}
+function startRename(s: Session) {
+  editing = s.id;
+  renameText = s.title ?? s.taskPrompt;
+}
+async function commitRename() {
+  const id = editing;
+  const title = renameText.trim();
+  editing = null;
+  if (!id || !title) return;
+  await fetch(`${httpBase}/sessions/${id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  await loadSessions();
+}
+function renameKey(e: KeyboardEvent) {
+  if (e.key === "Enter") commitRename();
+  else if (e.key === "Escape") editing = null;
+}
+async function closeTab(s: Session) {
+  const label = s.title ?? s.taskPrompt;
+  if (!window.confirm(`Close "${label}"?\nThis removes the session and its history.`)) return;
+  await fetch(`${httpBase}/sessions/${s.id}`, { method: "DELETE" });
+  if (s.id === activeId) activeId = null;
+  await loadSessions();
+}
+
 // --- New session modal ---
 let showNew = $state(false);
 let newRepo = $state("");
@@ -260,11 +295,29 @@ function submitAnswers(question: { id: string; questions: { question: string }[]
     </div>
     <button class="newbtn" onclick={openNew}>+ New session</button>
     {#each sessions as s (s.id)}
-      <button class="tab" class:active={s.id === activeId} onclick={() => select(s.id)}>
-        <span class="t-repo">{repoName(s.repoPath)}</span>
-        <span class="t-task">{s.title ?? s.taskPrompt}</span>
-        <span class="t-status {s.status}">{s.status}</span>
-      </button>
+      <div class="tab" class:active={s.id === activeId}>
+        {#if editing === s.id}
+          <input
+            class="tab-rename"
+            bind:value={renameText}
+            onkeydown={renameKey}
+            onblur={commitRename}
+            use:focusOnMount
+          />
+        {:else}
+          <button
+            class="tab-main"
+            onclick={() => select(s.id)}
+            ondblclick={() => startRename(s)}
+            title="Double-click to rename"
+          >
+            <span class="t-repo">{repoName(s.repoPath)}</span>
+            <span class="t-task">{s.title ?? s.taskPrompt}</span>
+            <span class="t-status {s.status}">{s.status}</span>
+          </button>
+          <button class="tab-close" title="Close session" onclick={() => closeTab(s)}>×</button>
+        {/if}
+      </div>
     {/each}
   </nav>
 
@@ -601,9 +654,24 @@ function submitAnswers(question: { id: string; questions: { question: string }[]
     margin-bottom: 8px;
   }
   .tab {
+    display: flex;
+    align-items: center;
+    border: 1px solid transparent;
+    border-radius: 8px;
+  }
+  .tab:hover {
+    background: var(--panel);
+  }
+  .tab.active {
+    background: var(--panel);
+    border-color: var(--accent);
+  }
+  .tab-main {
+    flex: 1;
+    min-width: 0;
     text-align: left;
     background: transparent;
-    border: 1px solid transparent;
+    border: 0;
     border-radius: 8px;
     padding: 8px 10px;
     cursor: pointer;
@@ -613,12 +681,34 @@ function submitAnswers(question: { id: string; questions: { question: string }[]
     flex-direction: column;
     gap: 2px;
   }
-  .tab:hover {
-    background: var(--panel);
+  .tab-close {
+    background: transparent;
+    border: 0;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    padding: 4px 9px;
+    opacity: 0;
   }
-  .tab.active {
-    background: var(--panel);
-    border-color: var(--accent);
+  .tab:hover .tab-close {
+    opacity: 0.7;
+  }
+  .tab-close:hover {
+    opacity: 1;
+    color: var(--danger);
+  }
+  .tab-rename {
+    flex: 1;
+    min-width: 0;
+    margin: 4px;
+    background: var(--bg, #0c0d12);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    padding: 6px 8px;
+    color: var(--fg);
+    font: inherit;
+    font-size: 13px;
   }
   .t-repo {
     font-weight: 600;

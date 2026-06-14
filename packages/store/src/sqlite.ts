@@ -170,6 +170,14 @@ export class SqliteStorage implements Storage {
       .run(status, endedAt, id);
   }
 
+  deleteSession(id: string): void {
+    // Events FK-reference sessions, so clear them first (one transaction).
+    this.db.transaction((sid: string) => {
+      this.db.prepare("DELETE FROM events WHERE session_id = ?").run(sid);
+      this.db.prepare("DELETE FROM sessions WHERE id = ?").run(sid);
+    })(id);
+  }
+
   setSessionTitle(id: string, title: string): void {
     this.db.prepare("UPDATE sessions SET title = ? WHERE id = ?").run(title, id);
   }

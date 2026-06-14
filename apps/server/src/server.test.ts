@@ -134,6 +134,34 @@ describe("startGovernorServer", () => {
     expect(list.find((s) => s.id === created.id)?.taskPrompt).toBe("persist me");
   });
 
+  it("renames and closes a session over HTTP", async () => {
+    server = await startGovernorServer({ port: 0, dbPath: ":memory:", queryImpl });
+    const created = (await (
+      await fetch(`${server.url}/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ repoPath: tmpdir(), prompt: "rename me" }),
+      })
+    ).json()) as { id: string };
+
+    const patch = await fetch(`${server.url}/sessions/${created.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title: "Custom Name" }),
+    });
+    expect(patch.status).toBe(204);
+    let list = (await (await fetch(`${server.url}/sessions`)).json()) as {
+      id: string;
+      title: string | null;
+    }[];
+    expect(list.find((s) => s.id === created.id)?.title).toBe("Custom Name");
+
+    const del = await fetch(`${server.url}/sessions/${created.id}`, { method: "DELETE" });
+    expect(del.status).toBe(204);
+    list = (await (await fetch(`${server.url}/sessions`)).json()) as { id: string; title: null }[];
+    expect(list.map((s) => s.id)).not.toContain(created.id);
+  });
+
   it("rejects a cross-origin POST /sessions (CSRF→RCE guard)", async () => {
     server = await startGovernorServer({ port: 0, dbPath: ":memory:", queryImpl });
     const res = await fetch(`${server.url}/sessions`, {

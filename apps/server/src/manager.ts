@@ -113,6 +113,24 @@ export class SessionManager {
     return this.sessions.get(id);
   }
 
+  /** Close a session's agent and delete it (and its events) from the store. */
+  async remove(id: string): Promise<void> {
+    const gs = this.sessions.get(id);
+    if (gs) {
+      await gs.close().catch(() => {});
+      this.sessions.delete(id);
+    }
+    this.deps.store.deleteSession(id);
+  }
+
+  /** Rename a session; returns false if it isn't hosted. */
+  rename(id: string, title: string): boolean {
+    const gs = this.sessions.get(id);
+    if (!gs) return false;
+    gs.setTitle(title);
+    return true;
+  }
+
   async closeAll(): Promise<void> {
     await Promise.all([...this.sessions.values()].map((s) => s.close()));
   }

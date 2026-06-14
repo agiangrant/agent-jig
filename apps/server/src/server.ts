@@ -113,7 +113,7 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
     if (origin && local) {
       c.header("access-control-allow-origin", origin);
       c.header("access-control-allow-headers", "content-type");
-      c.header("access-control-allow-methods", "GET, POST");
+      c.header("access-control-allow-methods", "GET, POST, PATCH, DELETE");
     }
     if (c.req.method === "OPTIONS") return c.body(null, 204);
     // CSRF→RCE guard: POST /sessions spawns an agent. A browser always sends
@@ -152,6 +152,18 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
       // e.g. worktree requested on a non-git repo.
       return c.json({ error: (e as Error).message ?? "could not create session" }, 400);
     }
+  });
+  app.patch("/sessions/:id", async (c) => {
+    const body = (await c.req.json().catch(() => ({}))) as { title?: string };
+    const title = (body.title ?? "").trim();
+    if (!title) return c.json({ error: "title is required" }, 400);
+    return manager.rename(c.req.param("id"), title)
+      ? c.body(null, 204)
+      : c.json({ error: "not found" }, 404);
+  });
+  app.delete("/sessions/:id", async (c) => {
+    await manager.remove(c.req.param("id"));
+    return c.body(null, 204);
   });
   app.get("/*", serveWeb(opts.webRoot ?? defaultWebRoot()));
 
