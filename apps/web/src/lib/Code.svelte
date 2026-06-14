@@ -54,7 +54,6 @@ $effect(() => {
     background: transparent !important;
     white-space: pre;
     font-family: var(--code-font);
-    tab-size: var(--tab-size);
   }
   /* Line numbers via a CSS counter on Shiki's per-line spans. */
   .code.numbered :global(code) {
@@ -77,6 +76,5 @@ $effect(() => {
     white-space: pre;
     color: var(--fg);
     font-family: var(--code-font);
-    tab-size: var(--tab-size);
   }
 </style>

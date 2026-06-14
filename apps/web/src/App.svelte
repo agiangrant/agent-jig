@@ -854,14 +854,6 @@ function onGlobalKey(e: KeyboardEvent) {
       </div>
 
       <div class="set-row">
-        <label for="set-tab">Tab size</label>
-        <div class="set-control">
-          <input id="set-tab" type="number" min="1" max="8" value={settings.tabSize} oninput={(e) => settings.setTabSize(Number(e.currentTarget.value))} />
-          <span class="set-hint">columns per tab (only affects literal tab characters)</span>
-        </div>
-      </div>
-
-      <div class="set-row">
         <label for="set-uifont">UI font</label>
         <div class="set-control">
           <input id="set-uifont" list="font-suggestions" placeholder="default" value={settings.uiFont} oninput={(e) => settings.setUiFont(e.currentTarget.value)} />

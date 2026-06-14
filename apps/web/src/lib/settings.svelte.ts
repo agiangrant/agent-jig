@@ -1,4 +1,3 @@
-const TAB_KEY = "governor:tabSize";
 const UI_FONT_KEY = "governor:uiFont";
 const CODE_FONT_KEY = "governor:codeFont";
 const CODE_SIZE_KEY = "governor:codeFontSize";
@@ -25,9 +24,6 @@ function persist(key: string, value: string): void {
     /* storage unavailable */
   }
 }
-function clampTab(n: number): number {
-  return Number.isFinite(n) ? Math.min(8, Math.max(1, Math.round(n))) : 2;
-}
 function clampCodeSize(n: number): number {
   return Number.isFinite(n) ? Math.min(28, Math.max(9, Math.round(n))) : 12;
 }
@@ -42,7 +38,6 @@ function fontStack(chosen: string, fallback: string): string {
 
 /** Persisted appearance settings applied as CSS variables on :root. */
 class Settings {
-  tabSize = $state<number>(clampTab(Number(load(TAB_KEY, "2"))));
   /** Empty = use the default stack. Any locally-installed font name works. */
   uiFont = $state<string>(load(UI_FONT_KEY, ""));
   codeFont = $state<string>(load(CODE_FONT_KEY, ""));
@@ -51,18 +46,12 @@ class Settings {
 
   apply(): void {
     const r = document.documentElement.style;
-    r.setProperty("--tab-size", String(this.tabSize));
     r.setProperty("--ui-font", fontStack(this.uiFont, UI_DEFAULT));
     r.setProperty("--code-font", fontStack(this.codeFont, CODE_DEFAULT));
     r.setProperty("--code-font-size", `${this.codeFontSize}px`);
     r.setProperty("--ui-font-size", `${UI_SIZE_PX[this.uiSize]}px`);
   }
 
-  setTabSize(n: number): void {
-    this.tabSize = clampTab(n);
-    persist(TAB_KEY, String(this.tabSize));
-    this.apply();
-  }
   setUiFont(value: string): void {
     this.uiFont = value;
     persist(UI_FONT_KEY, value);
