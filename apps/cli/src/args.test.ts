@@ -33,4 +33,11 @@ describe("parseCliArgs", () => {
   it("recognises --help through the leading --", () => {
     expect(parseCliArgs(["--", "--help"]).help).toBe(true);
   });
+
+  it("parses `serve` with no task", () => {
+    const a = parseCliArgs(["--", "serve", "--port", "5000"]);
+    expect(a.command).toBe("serve");
+    expect(a.prompt).toBe("");
+    expect(a.port).toBe("5000");
+  });
 });
