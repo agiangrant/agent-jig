@@ -8,6 +8,9 @@
   --warn: #e6b450;
   --danger: #e06c75;
   --ok: #7fd17f;
+  /* Readable text on accent/warn-filled buttons & badges (theme-derived). */
+  --on-accent: #0c0d12;
+  --on-warn: #0c0d12;
   color-scheme: dark;
 }
 

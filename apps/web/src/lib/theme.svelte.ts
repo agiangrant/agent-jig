@@ -28,6 +28,34 @@ function loadCurrent(): string {
   }
 }
 
+/** Parse a hex (#rgb/#rrggbb/#rrggbbaa) or rgb()/rgba() color to [r,g,b], or null. */
+function parseColor(color: string): [number, number, number] | null {
+  let s = color.trim();
+  if (s.startsWith("#")) {
+    s = s.slice(1);
+    if (s.length === 3) s = [...s].map((ch) => ch + ch).join("");
+    if (s.length === 8) s = s.slice(0, 6);
+    if (s.length !== 6) return null;
+    const n = Number.parseInt(s, 16);
+    return Number.isNaN(n) ? null : [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+  const m = s.match(/rgba?\(([^)]+)\)/);
+  if (m?.[1]) {
+    const [r, g, b] = m[1].split(",").map((p) => Number.parseFloat(p));
+    if (r !== undefined && g !== undefined && b !== undefined) return [r, g, b];
+  }
+  return null;
+}
+
+/** Black or white, whichever reads on `color` — so colored buttons are legible. */
+function contrastText(color: string): string {
+  const rgb = parseColor(color);
+  if (!rgb) return "#0c0d12";
+  const [r, g, b] = rgb.map((v) => v / 255);
+  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return luminance > 0.55 ? "#0c0d12" : "#ffffff";
+}
+
 /**
  * Map a resolved theme's VSCode `colors` onto the UI's chrome CSS variables, so
  * the whole app (not just code) follows the selected theme. Missing keys keep
@@ -43,8 +71,10 @@ async function applyChrome(name: string): Promise<void> {
   }
   const c = theme.colors ?? {};
   const root = document.documentElement.style;
+  const pick = (...candidates: (string | undefined)[]): string | undefined =>
+    candidates.find((v) => typeof v === "string" && v.length > 0);
   const set = (cssVar: string, ...candidates: (string | undefined)[]) => {
-    const val = candidates.find((v) => typeof v === "string" && v.length > 0);
+    const val = pick(...candidates);
     if (val) root.setProperty(cssVar, val);
   };
   set("--bg", c["editor.background"], theme.bg);
@@ -57,11 +87,22 @@ async function applyChrome(name: string): Promise<void> {
     theme.bg,
   );
   set("--line", c["panel.border"], c["editorGroup.border"], c["input.border"], c.contrastBorder);
-  set("--accent", c.focusBorder, c["button.background"], c["textLink.foreground"]);
   set("--muted", c.descriptionForeground, c["editorLineNumber.foreground"]);
   set("--ok", c["gitDecoration.addedResourceForeground"], c["editorGutter.addedBackground"]);
-  set("--warn", c["editorWarning.foreground"], c["list.warningForeground"]);
   set("--danger", c["editorError.foreground"], c["gitDecoration.deletedResourceForeground"]);
+
+  // Accent/warn back filled colored buttons & badges — derive a readable text
+  // color from each so themes with a dark accent don't render black-on-black.
+  const accent = pick(c.focusBorder, c["button.background"], c["textLink.foreground"]);
+  if (accent) {
+    root.setProperty("--accent", accent);
+    root.setProperty("--on-accent", contrastText(accent));
+  }
+  const warn = pick(c["editorWarning.foreground"], c["list.warningForeground"]);
+  if (warn) {
+    root.setProperty("--warn", warn);
+    root.setProperty("--on-warn", contrastText(warn));
+  }
   set(
     "--diff-add-bg",
     c["diffEditor.insertedLineBackground"],

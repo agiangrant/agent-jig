@@ -822,7 +822,7 @@ function onGlobalKey(e: KeyboardEvent) {
   }
   .newbtn {
     background: var(--accent);
-    color: #0c0d12;
+    color: var(--on-accent);
     border: 0;
     border-radius: 6px;
     padding: 8px;
@@ -866,7 +866,7 @@ function onGlobalKey(e: KeyboardEvent) {
     padding: 0 5px;
     border-radius: 9px;
     background: var(--accent);
-    color: #0c0d12;
+    color: var(--on-accent);
     font-size: 11px;
     font-weight: 700;
     display: inline-flex;
@@ -875,6 +875,7 @@ function onGlobalKey(e: KeyboardEvent) {
   }
   .t-badge.ask {
     background: var(--warn);
+    color: var(--on-warn);
   }
   .tab-close {
     background: transparent;
@@ -1188,7 +1189,7 @@ function onGlobalKey(e: KeyboardEvent) {
   }
   .q-submit {
     background: var(--accent);
-    color: #0c0d12;
+    color: var(--on-accent);
     border: 0;
     border-radius: 8px;
     padding: 9px 16px;
@@ -1218,7 +1219,7 @@ function onGlobalKey(e: KeyboardEvent) {
   }
   .row button {
     background: var(--accent);
-    color: #0c0d12;
+    color: var(--on-accent);
     border: 0;
     border-radius: 6px;
     padding: 4px 14px;
@@ -1402,7 +1403,7 @@ function onGlobalKey(e: KeyboardEvent) {
   }
   .msg.sidecar {
     align-self: flex-start;
-    background: #0f1015;
+    background: var(--bg);
   }
   .msg.steer {
     align-self: flex-end;
@@ -1450,7 +1451,7 @@ function onGlobalKey(e: KeyboardEvent) {
   }
   .actions .steer {
     background: var(--accent);
-    color: #0c0d12;
+    color: var(--on-accent);
     border: 0;
     font-weight: 600;
   }
@@ -1633,7 +1634,7 @@ function onGlobalKey(e: KeyboardEvent) {
   }
   .modal-actions .primary {
     background: var(--accent);
-    color: #0c0d12;
+    color: var(--on-accent);
     border: 0;
     font-weight: 600;
   }
