@@ -74,15 +74,19 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
   }
 
   const app = new Hono();
-  // Allow the Vite dev origin (and other local origins) to call the HTTP API.
   app.use("*", async (c, next) => {
     const origin = c.req.header("origin");
-    if (origin && isLocalOrigin(origin)) {
+    const local = isLocalOrigin(origin);
+    if (origin && local) {
       c.header("access-control-allow-origin", origin);
       c.header("access-control-allow-headers", "content-type");
       c.header("access-control-allow-methods", "GET, POST");
     }
     if (c.req.method === "OPTIONS") return c.body(null, 204);
+    // CSRF→RCE guard: POST /sessions spawns an agent. A browser always sends
+    // Origin on a cross-origin request, so reject state-changing calls from any
+    // non-local origin. (CLI/non-browser clients send no Origin and are trusted.)
+    if (c.req.method !== "GET" && !local) return c.json({ error: "forbidden origin" }, 403);
     await next();
   });
   app.get("/healthz", (c) => c.json({ ok: true }));
@@ -100,8 +104,10 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
 
   let httpServer!: ReturnType<typeof serve>;
   const port = await new Promise<number>((res) => {
-    httpServer = serve({ fetch: app.fetch, port: opts.port ?? DEFAULT_PORT }, (info) =>
-      res(info.port),
+    // Bind to loopback only — never expose the agent-spawning API on the network.
+    httpServer = serve(
+      { fetch: app.fetch, port: opts.port ?? DEFAULT_PORT, hostname: "127.0.0.1" },
+      (info) => res(info.port),
     );
   });
 

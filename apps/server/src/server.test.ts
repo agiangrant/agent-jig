@@ -85,4 +85,16 @@ describe("startGovernorServer", () => {
     const list = (await (await fetch(`${server.url}/sessions`)).json()) as unknown[];
     expect(list.length).toBe(1);
   });
+
+  it("rejects a cross-origin POST /sessions (CSRF→RCE guard)", async () => {
+    server = await startGovernorServer({ port: 0, dbPath: ":memory:", queryImpl });
+    const res = await fetch(`${server.url}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "http://evil.example" },
+      body: JSON.stringify({ repoPath: tmpdir(), prompt: "x" }),
+    });
+    expect(res.status).toBe(403);
+    const list = (await (await fetch(`${server.url}/sessions`)).json()) as unknown[];
+    expect(list.length).toBe(0); // nothing created
+  });
 });
