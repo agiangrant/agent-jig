@@ -387,6 +387,11 @@ const commands = $derived<Command[]>([
   { id: "diff:split", label: "Diff layout: Side-by-side", run: () => diffMode.set("split") },
   { id: "diff:unified", label: "Diff layout: Unified", run: () => diffMode.set("unified") },
   { id: "diff:ba", label: "Diff layout: Before/After", run: () => diffMode.set("ba") },
+  {
+    id: "lines",
+    label: diffMode.lineNumbers ? "Line numbers: hide" : "Line numbers: show",
+    run: () => diffMode.toggleLineNumbers(),
+  },
   ...(activeId
     ? [
         {

@@ -14,9 +14,24 @@ const writeContent = $derived(typeof p.content === "string" ? p.content : "");
 const hunks: Hunk[] = $derived(toHunks(toolName, payload));
 </script>
 
+{#snippet lineToggle()}
+  <button
+    class="seg"
+    class:on={diffMode.lineNumbers}
+    title="Toggle line numbers"
+    onclick={() => diffMode.toggleLineNumbers()}
+  >
+    # Lines
+  </button>
+{/snippet}
+
 {#if isWrite}
+  <div class="controls">
+    <span class="spacer"></span>
+    {@render lineToggle()}
+  </div>
   <div class="block plain">
-    <Code code={writeContent} path={filePath} />
+    <Code code={writeContent} path={filePath} numbered={diffMode.lineNumbers} />
   </div>
 {:else if hunks.length > 0}
   <div class="controls">
@@ -24,10 +39,11 @@ const hunks: Hunk[] = $derived(toHunks(toolName, payload));
     <button class="seg" class:on={diffMode.mode === "unified"} onclick={() => diffMode.set("unified")}>Unified</button>
     <button class="seg" class:on={diffMode.mode === "ba"} onclick={() => diffMode.set("ba")}>Before/After</button>
     {#if diffMode.mode === "ba"}
-      <span class="spacer"></span>
       <button class="seg" class:on={diffMode.side === "before"} onclick={() => (diffMode.side = "before")}>Before</button>
       <button class="seg" class:on={diffMode.side === "after"} onclick={() => (diffMode.side = "after")}>After</button>
     {/if}
+    <span class="spacer"></span>
+    {@render lineToggle()}
   </div>
 
   <div class="diff">
@@ -35,19 +51,19 @@ const hunks: Hunk[] = $derived(toHunks(toolName, payload));
       {#if diffMode.mode === "split"}
         <div class="split">
           <div class="pane del">
-            {#if h.old.length}<Code code={h.old.join("\n")} path={filePath} />{:else}<div class="empty">—</div>{/if}
+            {#if h.old.length}<Code code={h.old.join("\n")} path={filePath} numbered={diffMode.lineNumbers} />{:else}<div class="empty">—</div>{/if}
           </div>
           <div class="pane add">
-            {#if h.new.length}<Code code={h.new.join("\n")} path={filePath} />{:else}<div class="empty">—</div>{/if}
+            {#if h.new.length}<Code code={h.new.join("\n")} path={filePath} numbered={diffMode.lineNumbers} />{:else}<div class="empty">—</div>{/if}
           </div>
         </div>
       {:else if diffMode.mode === "unified"}
-        {#if h.old.length}<div class="block del"><Code code={h.old.join("\n")} path={filePath} /></div>{/if}
-        {#if h.new.length}<div class="block add"><Code code={h.new.join("\n")} path={filePath} /></div>{/if}
+        {#if h.old.length}<div class="block del"><Code code={h.old.join("\n")} path={filePath} numbered={diffMode.lineNumbers} /></div>{/if}
+        {#if h.new.length}<div class="block add"><Code code={h.new.join("\n")} path={filePath} numbered={diffMode.lineNumbers} /></div>{/if}
       {:else}
         {@const side = diffMode.side === "before" ? h.old : h.new}
         <div class="block {diffMode.side === 'before' ? 'del' : 'add'}">
-          <Code code={side.join("\n")} path={filePath} />
+          <Code code={side.join("\n")} path={filePath} numbered={diffMode.lineNumbers} />
         </div>
       {/if}
     {/each}
