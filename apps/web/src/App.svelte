@@ -133,6 +133,63 @@ async function closeTab(s: Session) {
   await loadSessions();
 }
 
+// --- Drag to reorder tabs (persisted locally) ---
+const ORDER_KEY = "governor:tabOrder";
+function loadOrder(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(ORDER_KEY) ?? "[]");
+    return Array.isArray(v) ? (v as string[]) : [];
+  } catch {
+    return [];
+  }
+}
+let tabOrder = $state<string[]>(loadOrder());
+function saveOrder(ids: string[]) {
+  tabOrder = ids;
+  try {
+    localStorage.setItem(ORDER_KEY, JSON.stringify(ids));
+  } catch {
+    /* storage unavailable */
+  }
+}
+// Tabs sorted by the saved order; unseen (new) sessions keep their natural order at the end.
+const orderedSessions = $derived.by(() => {
+  const pos = new Map(tabOrder.map((id, i) => [id, i]));
+  return [...sessions].sort((a, b) => (pos.get(a.id) ?? Infinity) - (pos.get(b.id) ?? Infinity));
+});
+
+let dragId = $state<string | null>(null);
+let overId = $state<string | null>(null);
+function onDragStart(e: DragEvent, id: string) {
+  dragId = id;
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", id);
+  }
+}
+function onDragOver(e: DragEvent, id: string) {
+  if (dragId === null) return;
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+  overId = id;
+}
+function onDrop(e: DragEvent, targetId: string) {
+  e.preventDefault();
+  const from = dragId;
+  dragId = null;
+  overId = null;
+  if (!from || from === targetId) return;
+  const ids = orderedSessions.map((s) => s.id);
+  const [moved] = ids.splice(ids.indexOf(from), 1);
+  if (moved === undefined) return;
+  ids.splice(ids.indexOf(targetId), 0, moved); // place before the drop target
+  saveOrder(ids);
+}
+function onDragEnd() {
+  dragId = null;
+  overId = null;
+}
+
 // --- New session modal ---
 let showNew = $state(false);
 let newRepo = $state("");
@@ -402,8 +459,20 @@ function onGlobalKey(e: KeyboardEvent) {
       <button class="icon" title="Hide sidebar" onclick={() => (sidebarOpen = false)}>‹</button>
     </div>
     <button class="newbtn" onclick={openNew}>+ New session</button>
-    {#each sessions as s (s.id)}
-      <div class="tab" class:active={s.id === activeId}>
+    {#each orderedSessions as s (s.id)}
+      <!-- svelte-ignore a11y_no_static_element_interactions -- drag is a pointer-only
+           enhancement; the inner buttons handle keyboard select/close -->
+      <div
+        class="tab"
+        class:active={s.id === activeId}
+        class:dragging={dragId === s.id}
+        class:over={overId === s.id && dragId !== null && dragId !== s.id}
+        draggable={editing !== s.id}
+        ondragstart={(e) => onDragStart(e, s.id)}
+        ondragover={(e) => onDragOver(e, s.id)}
+        ondrop={(e) => onDrop(e, s.id)}
+        ondragend={onDragEnd}
+      >
         {#if editing === s.id}
           <input
             class="tab-rename"
@@ -846,6 +915,12 @@ function onGlobalKey(e: KeyboardEvent) {
   .tab.active {
     background: var(--panel);
     border-color: var(--accent);
+  }
+  .tab.dragging {
+    opacity: 0.4;
+  }
+  .tab.over {
+    box-shadow: inset 0 2px 0 var(--accent);
   }
   .tab-main {
     flex: 1;
