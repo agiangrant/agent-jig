@@ -8,55 +8,49 @@ const conn = new GovernorConnection();
 const wsUrl = import.meta.env.VITE_WS_URL ?? `ws://${location.host}`;
 conn.connect(wsUrl);
 
+const toggle = () => conn.setDial(conn.mode === "slowed" ? "realtime" : "slowed");
+
 function editEvent(editId: string): GovernorEvent | undefined {
   return conn.events.find((e) => e.editId === editId && e.type === "tool_call");
 }
-
 function filePath(payload: unknown): string {
   return ((payload ?? {}) as { file_path?: string }).file_path ?? "";
 }
-
+function pathFor(editId: string): string {
+  return filePath(editEvent(editId)?.payload);
+}
 function narrationFor(editId: string): string {
   const e = conn.events.find((x) => x.type === "narration" && x.editId === editId);
   return ((e?.payload ?? {}) as { text?: string }).text ?? "";
 }
-
-const toggle = () => conn.setDial(conn.mode === "slowed" ? "realtime" : "slowed");
-
-let directive = $state("");
-function steer() {
-  const text = directive.trim();
-  if (!text) return;
-  conn.sendDirective(text);
-  directive = "";
-}
-
-let question = $state("");
-function ask() {
-  const text = question.trim();
-  if (!text) return;
-  conn.askSidecar(text);
-  question = "";
-}
-
 function riskLabel(r: number): "high" | "med" | "low" {
   if (r >= 0.8) return "high";
   if (r >= 0.4) return "med";
   return "low";
 }
-
-// The pending edit carries only metadata; its diff lives in the tool_call event.
-function payloadFor(editId: string): unknown {
-  return conn.events.find((e) => e.editId === editId && e.type === "tool_call")?.payload;
-}
-
 function outOfBand(p: unknown): { attributedTo: string; files: { path: string; kind: string }[] } {
   const v = (p ?? {}) as { attributedTo?: string; files?: { path: string; kind: string }[] };
   return { attributedTo: v.attributedTo ?? "external", files: v.files ?? [] };
 }
-
-function reasonText(p: unknown): string {
+function text(p: unknown): string {
   return ((p ?? {}) as { text?: string }).text ?? "";
+}
+
+// One compose box, two destinations: Ask (sidecar) and Send→agent (directive).
+let message = $state("");
+let anchor = $state(""); // optional editId to attach a "re:" reference
+
+function ask() {
+  const t = message.trim();
+  if (!t) return;
+  conn.askSidecar(anchor ? `Regarding the edit to ${pathFor(anchor)}: ${t}` : t);
+  message = "";
+}
+function steer() {
+  const t = message.trim();
+  if (!t) return;
+  conn.sendDirective(t, anchor || null);
+  message = "";
 }
 </script>
 
@@ -75,148 +69,135 @@ function reasonText(p: unknown): string {
     <p class="task">{conn.session.taskPrompt}</p>
   {/if}
 
-  <form
-    class="steer"
-    onsubmit={(e) => {
-      e.preventDefault();
-      steer();
-    }}
-  >
-    <input
-      type="text"
-      bind:value={directive}
-      placeholder="Steer the agent — e.g. use the categories from config/taxonomy.json"
-    />
-    <button type="submit">Send</button>
-  </form>
+  <div class="cols">
+    <section class="left">
+      <h2>Queue <span class="count">{conn.queue.length}</span></h2>
+      {#if conn.queue.length === 0}
+        <p class="empty">Nothing waiting — the agent is working, or idle.</p>
+      {:else}
+        <ul>
+          {#each conn.queue as edit (edit.editId)}
+            <li>
+              <div class="row">
+                <span class="risk {riskLabel(edit.risk)}">{riskLabel(edit.risk)}</span>
+                <code>{edit.path}</code>
+                <span class="tool">{edit.toolName}</span>
+                <button onclick={() => conn.ack(edit.editId)}>Ack</button>
+              </div>
+              <DiffView toolName={edit.toolName} payload={editEvent(edit.editId)?.payload} />
+            </li>
+          {/each}
+        </ul>
+      {/if}
 
-  <section class="queue">
-    <h2>Queue <span class="count">{conn.queue.length}</span></h2>
-    {#if conn.queue.length === 0}
-      <p class="empty">Nothing waiting — the agent is working, or idle.</p>
-    {:else}
-      <ul>
-        {#each conn.queue as edit (edit.editId)}
-          <li>
-            <div class="row">
-              <span class="risk {riskLabel(edit.risk)}">{riskLabel(edit.risk)}</span>
-              <code>{edit.path}</code>
-              <span class="tool">{edit.toolName}</span>
-              <button onclick={() => conn.ack(edit.editId)}>Ack</button>
-            </div>
-            <DiffView toolName={edit.toolName} payload={payloadFor(edit.editId)} />
-          </li>
+      <h2>Changes by intent</h2>
+      {#if conn.changeView.length === 0}
+        <p class="empty">No edits yet.</p>
+      {:else}
+        {#each conn.changeView as g (g.id)}
+          <div class="group">
+            <p class="label">{g.label}</p>
+            {#if g.pattern}
+              {@const rep = editEvent(g.pattern.editIds[0] ?? "")}
+              <div class="edit collapsed">
+                <span class="badge">⊟ {g.pattern.count} structurally identical edits</span>
+                <code>{filePath(rep?.payload)} + {g.pattern.count - 1} more</code>
+                {#if narrationFor(g.pattern.editIds[0] ?? "")}
+                  <p class="why-line">💬 {narrationFor(g.pattern.editIds[0] ?? "")}</p>
+                {/if}
+                <DiffView toolName={rep?.toolName ?? ""} payload={rep?.payload} />
+              </div>
+              {#each g.outliers as id (id)}
+                {@const e = editEvent(id)}
+                <div class="edit outlier">
+                  <span class="badge warn">⚠ differs from the pattern — worth a look</span>
+                  <code>{filePath(e?.payload)}</code>
+                  {#if narrationFor(id)}<p class="why-line">💬 {narrationFor(id)}</p>{/if}
+                  <DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />
+                </div>
+              {/each}
+            {:else}
+              {#each g.editIds as id (id)}
+                {@const e = editEvent(id)}
+                <div class="edit">
+                  <code>{filePath(e?.payload)}</code>
+                  {#if narrationFor(id)}<p class="why-line">💬 {narrationFor(id)}</p>{/if}
+                  <DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />
+                </div>
+              {/each}
+            {/if}
+          </div>
         {/each}
-      </ul>
-    {/if}
-  </section>
+      {/if}
 
-  <section class="changes">
-    <h2>Changes by intent</h2>
-    {#if conn.changeView.length === 0}
-      <p class="empty">No edits yet.</p>
-    {:else}
-      {#each conn.changeView as g (g.id)}
-        <div class="group">
-          <p class="label">{g.label}</p>
-          {#if g.pattern}
-            {@const rep = editEvent(g.pattern.editIds[0] ?? "")}
-            <div class="edit collapsed">
-              <span class="badge">⊟ {g.pattern.count} structurally identical edits</span>
-              <code>{filePath(rep?.payload)} + {g.pattern.count - 1} more</code>
-              {#if narrationFor(g.pattern.editIds[0] ?? "")}
-                <p class="why-line">💬 {narrationFor(g.pattern.editIds[0] ?? "")}</p>
-              {/if}
-              <DiffView toolName={rep?.toolName ?? ""} payload={rep?.payload} />
-            </div>
-            {#each g.outliers as id (id)}
-              {@const e = editEvent(id)}
-              <div class="edit outlier">
-                <span class="badge warn">⚠ differs from the pattern — worth a look</span>
-                <code>{filePath(e?.payload)}</code>
-                {#if narrationFor(id)}<p class="why-line">💬 {narrationFor(id)}</p>{/if}
-                <DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />
-              </div>
-            {/each}
-          {:else}
-            {#each g.editIds as id (id)}
-              {@const e = editEvent(id)}
-              <div class="edit">
-                <code>{filePath(e?.payload)}</code>
-                {#if narrationFor(id)}<p class="why-line">💬 {narrationFor(id)}</p>{/if}
-                <DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />
-              </div>
-            {/each}
-          {/if}
-        </div>
-      {/each}
-    {/if}
-  </section>
+      <details class="history">
+        <summary>History · {conn.events.length} events</summary>
+        <ol>
+          {#each conn.events as ev (ev.id)}
+            {#if ev.type === "out_of_band_change"}
+              <li class="oob">
+                <span class="seq">#{ev.seq}</span>
+                <span class="warn">⚠ changed outside the agent ({outOfBand(ev.payload).attributedTo})</span>
+                <span class="files">{outOfBand(ev.payload).files.map((f) => f.path).join(", ")}</span>
+              </li>
+            {:else if ev.type === "reasoning"}
+              <li class="reason"><span class="seq">#{ev.seq}</span><span class="why">{text(ev.payload)}</span></li>
+            {:else if ev.type === "directive"}
+              <li class="directive"><span class="seq">#{ev.seq}</span><span class="arrow">→ steer</span><span class="dtext">{text(ev.payload)}</span></li>
+            {:else}
+              <li>
+                <span class="seq">#{ev.seq}</span>
+                <span class="etype">{ev.type}</span>
+                {#if ev.toolName}<span class="tool">{ev.toolName}</span>{/if}
+                {#if ev.gateState}<span class="gate {ev.gateState}">{ev.gateState}</span>{/if}
+              </li>
+            {/if}
+          {/each}
+        </ol>
+      </details>
+    </section>
 
-  <section class="sidecar">
-    <h2>Sidecar <span class="hint">— ask about provenance; it won't steer the agent</span></h2>
-    <div class="chat">
-      {#each conn.sidecar as m, i (i)}
-        <div class="msg {m.role}">{m.text}</div>
-      {/each}
-    </div>
-    <form
-      class="ask"
-      onsubmit={(e) => {
-        e.preventDefault();
-        ask();
-      }}
-    >
-      <input
-        type="text"
-        bind:value={question}
-        placeholder="e.g. where did this list of categories come from?"
-      />
-      <button type="submit">Ask</button>
-    </form>
-  </section>
-
-  <section class="timeline">
-    <h2>Timeline</h2>
-    <ol>
-      {#each conn.events as ev (ev.id)}
-        {#if ev.type === "out_of_band_change"}
-          <li class="oob">
-            <span class="seq">#{ev.seq}</span>
-            <span class="warn">⚠ changed outside the agent ({outOfBand(ev.payload).attributedTo})</span>
-            <span class="files">{outOfBand(ev.payload).files.map((f) => f.path).join(", ")}</span>
-          </li>
-        {:else if ev.type === "reasoning"}
-          <li class="reason">
-            <span class="seq">#{ev.seq}</span>
-            <span class="why">{reasonText(ev.payload)}</span>
-          </li>
-        {:else if ev.type === "directive"}
-          <li class="directive">
-            <span class="seq">#{ev.seq}</span>
-            <span class="arrow">→ steer</span>
-            <span class="dtext">{reasonText(ev.payload)}</span>
-          </li>
-        {:else}
-          <li>
-            <span class="seq">#{ev.seq}</span>
-            <span class="type">{ev.type}</span>
-            {#if ev.toolName}<span class="tool">{ev.toolName}</span>{/if}
-            {#if ev.gateState}<span class="gate {ev.gateState}">{ev.gateState}</span>{/if}
-          </li>
+    <aside class="right">
+      <h2>Conversation</h2>
+      <div class="chat">
+        {#if conn.conversation.length === 0}
+          <p class="empty">Ask about provenance, or steer the agent.</p>
         {/if}
-      {/each}
-    </ol>
-  </section>
+        {#each conn.conversation as m, i (i)}
+          <div class="msg {m.role}">
+            {#if m.role === "sidecar"}<span class="tag">sidecar</span>{/if}
+            {#if m.role === "steer"}<span class="tag steer">→ sent to agent</span>{/if}
+            {m.text}
+          </div>
+        {/each}
+      </div>
+      <form
+        class="compose"
+        onsubmit={(e) => {
+          e.preventDefault();
+          steer();
+        }}
+      >
+        <input type="text" bind:value={message} placeholder="Ask about provenance, or steer the agent…" />
+        <div class="actions">
+          <select bind:value={anchor} title="Attach a reference to a pending edit">
+            <option value="">re: (none)</option>
+            {#each conn.queue as e (e.editId)}<option value={e.editId}>re: {e.path}</option>{/each}
+          </select>
+          <button type="button" class="ask" onclick={ask}>Ask</button>
+          <button type="submit" class="send">Send → agent</button>
+        </div>
+      </form>
+    </aside>
+  </div>
 </main>
 
 <style>
   main {
-    max-width: 820px;
+    max-width: 1140px;
     margin: 0 auto;
     padding: 24px 20px 64px;
   }
-
   header {
     display: flex;
     align-items: center;
@@ -224,19 +205,16 @@ function reasonText(p: unknown): string {
     border-bottom: 1px solid var(--line);
     padding-bottom: 12px;
   }
-
   .title {
     display: flex;
     align-items: baseline;
     gap: 12px;
   }
-
   h1 {
     font-size: 18px;
     margin: 0;
     letter-spacing: 0.5px;
   }
-
   .conn {
     font-size: 11px;
     color: var(--muted);
@@ -245,7 +223,6 @@ function reasonText(p: unknown): string {
   .conn.on {
     color: var(--ok);
   }
-
   .dial {
     background: var(--panel);
     color: var(--fg);
@@ -259,11 +236,21 @@ function reasonText(p: unknown): string {
     border-color: var(--warn);
     color: var(--warn);
   }
-
   .task {
     color: var(--muted);
     border-left: 2px solid var(--line);
     padding-left: 12px;
+  }
+
+  .cols {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 360px;
+    gap: 28px;
+    align-items: start;
+  }
+  .right {
+    position: sticky;
+    top: 16px;
   }
 
   h2 {
@@ -271,17 +258,15 @@ function reasonText(p: unknown): string {
     text-transform: uppercase;
     letter-spacing: 0.6px;
     color: var(--muted);
-    margin: 28px 0 10px;
+    margin: 24px 0 10px;
   }
   .count {
     color: var(--accent);
   }
-
   .empty {
     color: var(--muted);
     font-style: italic;
   }
-
   ul,
   ol {
     list-style: none;
@@ -296,15 +281,15 @@ function reasonText(p: unknown): string {
     padding: 8px 12px;
     margin-bottom: 6px;
   }
-  .queue .row {
+  .row {
     display: flex;
     align-items: center;
     gap: 10px;
   }
-  .queue code {
+  .row code {
     flex: 1;
   }
-  .queue button {
+  .row button {
     background: var(--accent);
     color: #0c0d12;
     border: 0;
@@ -333,55 +318,9 @@ function reasonText(p: unknown): string {
   .risk.low {
     color: var(--muted);
   }
-
   .tool {
     color: var(--muted);
     font-size: 12px;
-  }
-
-  .timeline li {
-    display: flex;
-    gap: 10px;
-    align-items: center;
-    padding: 3px 0;
-    color: var(--muted);
-  }
-  .timeline .seq {
-    color: var(--line);
-    min-width: 42px;
-  }
-  .timeline .type {
-    color: var(--fg);
-  }
-
-  .gate {
-    font-size: 10px;
-    text-transform: uppercase;
-  }
-  .gate.pending {
-    color: var(--warn);
-  }
-  .gate.released {
-    color: var(--ok);
-  }
-  .gate.bypassed {
-    color: var(--muted);
-  }
-
-  .oob .warn {
-    color: var(--warn);
-  }
-  .oob .files {
-    color: var(--fg);
-  }
-
-  .reason {
-    align-items: flex-start;
-  }
-  .reason .why {
-    color: var(--accent);
-    font-style: italic;
-    opacity: 0.85;
   }
 
   .group {
@@ -425,73 +364,103 @@ function reasonText(p: unknown): string {
     opacity: 0.9;
   }
 
-  .steer {
-    display: flex;
-    gap: 8px;
-    margin: 14px 0;
+  .history {
+    margin-top: 28px;
+    border-top: 1px solid var(--line);
+    padding-top: 8px;
   }
-  .steer input {
-    flex: 1;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 8px 12px;
-    color: var(--fg);
-    font: inherit;
-  }
-  .steer button {
-    background: var(--accent);
-    color: #0c0d12;
-    border: 0;
-    border-radius: 8px;
-    padding: 0 16px;
+  .history summary {
     cursor: pointer;
-    font: inherit;
-    font-weight: 600;
+    color: var(--muted);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+  }
+  .history li {
+    display: flex;
+    gap: 10px;
+    align-items: baseline;
+    padding: 3px 0;
+    color: var(--muted);
+  }
+  .history .seq {
+    color: var(--line);
+    min-width: 42px;
+  }
+  .history .etype {
+    color: var(--fg);
+  }
+  .gate {
+    font-size: 10px;
+    text-transform: uppercase;
+  }
+  .gate.pending {
+    color: var(--warn);
+  }
+  .gate.released {
+    color: var(--ok);
+  }
+  .gate.bypassed {
+    color: var(--muted);
+  }
+  .oob .warn {
+    color: var(--warn);
+  }
+  .reason .why {
+    color: var(--accent);
+    font-style: italic;
+    opacity: 0.85;
   }
   .directive .arrow {
     color: var(--accent);
     font-weight: 600;
   }
-  .directive .dtext {
-    color: var(--fg);
-  }
 
-  .hint {
-    color: var(--muted);
-    font-weight: 400;
-    text-transform: none;
-    letter-spacing: 0;
-  }
   .chat {
     display: flex;
     flex-direction: column;
     gap: 8px;
     margin-bottom: 10px;
+    max-height: 60vh;
+    overflow-y: auto;
   }
   .msg {
     border: 1px solid var(--line);
     border-radius: 8px;
     padding: 8px 12px;
-    max-width: 85%;
+    max-width: 90%;
     white-space: pre-wrap;
+    font-size: 13px;
   }
-  .msg.user {
+  .msg.you {
     align-self: flex-end;
     background: var(--panel);
-    color: var(--fg);
   }
-  .msg.assistant {
+  .msg.sidecar {
     align-self: flex-start;
     background: #0f1015;
-    color: var(--fg);
   }
-  .ask {
+  .msg.steer {
+    align-self: flex-end;
+    border-color: var(--accent);
+  }
+  .tag {
+    display: block;
+    font-size: 10px;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 2px;
+  }
+  .tag.steer {
+    color: var(--accent);
+  }
+
+  .compose {
     display: flex;
+    flex-direction: column;
     gap: 8px;
   }
-  .ask input {
-    flex: 1;
+  .compose input {
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: 8px;
@@ -499,13 +468,35 @@ function reasonText(p: unknown): string {
     color: var(--fg);
     font: inherit;
   }
-  .ask button {
+  .actions {
+    display: flex;
+    gap: 8px;
+  }
+  .actions select {
+    flex: 1;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 6px 8px;
+    color: var(--fg);
+    font: inherit;
+    min-width: 0;
+  }
+  .actions button {
+    border-radius: 8px;
+    padding: 0 14px;
+    cursor: pointer;
+    font: inherit;
+  }
+  .actions .ask {
     background: var(--panel);
     color: var(--fg);
     border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 0 16px;
-    cursor: pointer;
-    font: inherit;
+  }
+  .actions .send {
+    background: var(--accent);
+    color: #0c0d12;
+    border: 0;
+    font-weight: 600;
   }
 </style>

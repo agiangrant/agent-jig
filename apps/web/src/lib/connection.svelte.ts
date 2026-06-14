@@ -15,7 +15,8 @@ export class GovernorConnection {
   queue = $state<PendingEdit[]>([]);
   events = $state<GovernorEvent[]>([]);
   changeView = $state<ChangeView>([]);
-  sidecar = $state<Array<{ role: "user" | "assistant"; text: string }>>([]);
+  /** One unified human↔system conversation: questions, sidecar replies, and steers. */
+  conversation = $state<Array<{ role: "you" | "sidecar" | "steer"; text: string }>>([]);
   connected = $state(false);
 
   #ws: WebSocket | null = null;
@@ -50,7 +51,7 @@ export class GovernorConnection {
         this.changeView = msg.view;
         break;
       case "sidecar_reply":
-        this.sidecar = [...this.sidecar, { role: "assistant", text: msg.text }];
+        this.conversation = [...this.conversation, { role: "sidecar", text: msg.text }];
         break;
     }
   }
@@ -68,11 +69,12 @@ export class GovernorConnection {
   }
 
   sendDirective(text: string, anchorEditId: string | null = null): void {
+    this.conversation = [...this.conversation, { role: "steer", text }];
     this.#send({ type: "send_directive", text, anchorEditId });
   }
 
   askSidecar(text: string): void {
-    this.sidecar = [...this.sidecar, { role: "user", text }];
+    this.conversation = [...this.conversation, { role: "you", text }];
     this.#send({ type: "sidecar_message", text });
   }
 }

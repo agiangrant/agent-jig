@@ -166,8 +166,25 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
   // Read-only interlocutor for provenance Q&A; uses the agent's CLI auth.
   const sidecar = new Sidecar({ repoPath, queryImpl: opts.queryImpl });
   const askSidecar = (text: string) => {
-    const transcript = buildTranscript(store.listEvents(session.id));
-    const prompt = `Transcript of the agent so far:\n${transcript || "(nothing yet)"}\n\nDeveloper's question: ${text}`;
+    const events = store.listEvents(session.id);
+    const transcript = buildTranscript(events);
+    // The edit buffer: gated edits not yet written to disk, so the sidecar reasons
+    // about what's about-to-be rather than hedging over stale on-disk code.
+    const pending = pacer.queue
+      .map((p) => {
+        const call = events.find((e) => e.type === "tool_call" && e.editId === p.editId);
+        const pl = (call?.payload ?? {}) as { new_string?: string; content?: string };
+        const after = (pl.new_string ?? pl.content ?? "").slice(0, 800);
+        return `PENDING (awaiting the developer's ack — NOT yet on disk) ${p.path}:\n${after}`;
+      })
+      .join("\n\n");
+
+    const prompt = [
+      `Transcript of the agent so far:\n${transcript || "(nothing yet)"}`,
+      pending ? `\nEdits in the buffer (not yet applied):\n${pending}` : "",
+      `\nDeveloper's question: ${text}`,
+    ].join("\n");
+
     void sidecar
       .ask(prompt)
       .then((reply) => broadcaster.broadcast({ type: "sidecar_reply", text: reply }));
