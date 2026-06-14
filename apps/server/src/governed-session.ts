@@ -8,6 +8,7 @@ import type {
   PendingQuestion,
   Question,
   Session,
+  SessionSummary,
 } from "@governor/contracts";
 import { groupByIntent, isWriteClass, Pacer } from "@governor/core";
 import type { Narrator } from "@governor/narrator";
@@ -166,6 +167,15 @@ export class GovernedSession {
 
   meta(): Session {
     return this.store.getSession(this.id) ?? this.fallbackMeta();
+  }
+
+  /** Meta + the "needs the human" state used to badge the tab. */
+  summary(): SessionSummary {
+    return {
+      ...this.meta(),
+      pendingEdits: this.pacer.queue.length,
+      awaitingQuestion: this.question !== null,
+    };
   }
 
   /** Snapshot current state to a freshly-connected client, then keep it updated. */

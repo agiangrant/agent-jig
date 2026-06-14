@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import type { RunSessionDeps } from "@governor/agent-host";
-import type { DialMode, Session } from "@governor/contracts";
+import type { DialMode, Session, SessionSummary } from "@governor/contracts";
 import type { Narrator } from "@governor/narrator";
 import type { Storage } from "@governor/store";
 import type { StructuralAnalyzer } from "@governor/structural";
@@ -105,8 +105,8 @@ export class SessionManager {
     return gs.meta();
   }
 
-  list(): Session[] {
-    return [...this.sessions.values()].map((s) => s.meta());
+  list(): SessionSummary[] {
+    return [...this.sessions.values()].map((s) => s.summary());
   }
 
   get(id: string): GovernedSession | undefined {

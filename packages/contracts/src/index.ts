@@ -31,6 +31,15 @@ export const Session = z.object({
 });
 export type Session = z.infer<typeof Session>;
 
+/** A session plus ephemeral "needs the human" state, for the tab list. */
+export const SessionSummary = Session.extend({
+  /** Edits waiting on the human in this session's queue. */
+  pendingEdits: z.number().int().default(0),
+  /** True if the agent is blocked on an AskUserQuestion. */
+  awaitingQuestion: z.boolean().default(false),
+});
+export type SessionSummary = z.infer<typeof SessionSummary>;
+
 // --- The event log ---
 
 export const EventType = z.enum([

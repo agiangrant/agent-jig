@@ -1,5 +1,5 @@
 <script lang="ts">
-import type { GovernorEvent, Session } from "@governor/contracts";
+import type { GovernorEvent, Session, SessionSummary } from "@governor/contracts";
 import DiffView from "./lib/DiffView.svelte";
 import { GovernorConnection } from "./lib/connection.svelte.ts";
 
@@ -8,7 +8,7 @@ const httpBase = wsBase.replace(/^ws/, "http");
 
 const conn = new GovernorConnection();
 
-let sessions = $state<Session[]>([]);
+let sessions = $state<SessionSummary[]>([]);
 let activeId = $state<string | null>(null);
 let sidebarOpen = $state(true);
 
@@ -47,7 +47,7 @@ function onResizeKey(e: KeyboardEvent) {
 
 async function loadSessions() {
   try {
-    sessions = (await (await fetch(`${httpBase}/sessions`)).json()) as Session[];
+    sessions = (await (await fetch(`${httpBase}/sessions`)).json()) as SessionSummary[];
     if (activeId === null && sessions.length > 0) {
       const preferred = savedActiveId();
       const pick = preferred && sessions.some((s) => s.id === preferred) ? preferred : sessions[0]?.id;
@@ -315,6 +315,13 @@ function submitAnswers(question: { id: string; questions: { question: string }[]
             <span class="t-task">{s.title ?? s.taskPrompt}</span>
             <span class="t-status {s.status}">{s.status}</span>
           </button>
+          {#if s.awaitingQuestion}
+            <span class="t-badge ask" title="Waiting for your answer">?</span>
+          {:else if s.pendingEdits > 0}
+            <span class="t-badge" title="{s.pendingEdits} edit{s.pendingEdits > 1 ? 's' : ''} awaiting review">
+              {s.pendingEdits}
+            </span>
+          {/if}
           <button class="tab-close" title="Close session" onclick={() => closeTab(s)}>×</button>
         {/if}
       </div>
@@ -680,6 +687,23 @@ function submitAnswers(question: { id: string; questions: { question: string }[]
     display: flex;
     flex-direction: column;
     gap: 2px;
+  }
+  .t-badge {
+    flex-shrink: 0;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 9px;
+    background: var(--accent);
+    color: #0c0d12;
+    font-size: 11px;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .t-badge.ask {
+    background: var(--warn);
   }
   .tab-close {
     background: transparent;

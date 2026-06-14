@@ -71,6 +71,22 @@ describe("SessionManager.restore", () => {
     await mgr.closeAll();
   });
 
+  it("reports per-session attention state in the summary", async () => {
+    store = new SqliteStorage(":memory:");
+    const mgr = new SessionManager({
+      store,
+      analyzer: null,
+      narrator: null,
+      queryImpl: recordingQuery([]),
+    });
+    const created = mgr.create({ repoPath: tmpdir(), prompt: "t" });
+    const summary = mgr.list().find((s) => s.id === created.id);
+    expect(summary?.pendingEdits).toBe(0);
+    expect(summary?.awaitingQuestion).toBe(false);
+    await tick();
+    await mgr.closeAll();
+  });
+
   it("removes a session from the manager and the store", async () => {
     store = new SqliteStorage(":memory:");
     const mgr = new SessionManager({
