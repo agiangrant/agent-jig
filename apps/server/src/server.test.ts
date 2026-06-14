@@ -1,4 +1,6 @@
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ServerToClient } from "@governor/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
@@ -107,6 +109,29 @@ describe("startGovernorServer", () => {
     });
     const res = await fetch(`${server.url}/pick-folder`);
     expect(res.status).toBe(400);
+  });
+
+  it("rehydrates sessions from the store across a server restart", async () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), "gov-db-")), "g.db");
+
+    const first = await startGovernorServer({ port: 0, dbPath, queryImpl });
+    const created = (await (
+      await fetch(`${first.url}/sessions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ repoPath: tmpdir(), prompt: "persist me" }),
+      })
+    ).json()) as { id: string };
+    await first.close();
+
+    // A fresh process (new manager, empty in-memory map) on the same DB file.
+    server = await startGovernorServer({ port: 0, dbPath, queryImpl });
+    const list = (await (await fetch(`${server.url}/sessions`)).json()) as {
+      id: string;
+      taskPrompt: string;
+    }[];
+    expect(list.map((s) => s.id)).toContain(created.id);
+    expect(list.find((s) => s.id === created.id)?.taskPrompt).toBe("persist me");
   });
 
   it("rejects a cross-origin POST /sessions (CSRF→RCE guard)", async () => {

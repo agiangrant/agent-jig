@@ -28,8 +28,12 @@ export interface NewEvent {
 export interface Storage {
   createSession(input: NewSession): Session;
   getSession(id: string): Session | null;
+  listSessions(): Session[];
   setSessionStatus(id: string, status: SessionStatus, endedAt?: number | null): void;
   setSessionTitle(id: string, title: string): void;
+  /** The SDK's own session id, captured for cross-process resume. */
+  setClaudeSessionId(id: string, claudeId: string): void;
+  getClaudeSessionId(id: string): string | null;
 
   /** Appends an event, assigning id/seq/ts, and returns the stored row. */
   appendEvent(event: NewEvent): GovernorEvent;

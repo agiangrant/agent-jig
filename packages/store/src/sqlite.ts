@@ -13,13 +13,14 @@ const CONFIG_KEY = "session_config";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
-  id           TEXT PRIMARY KEY,
-  repo_path    TEXT NOT NULL,
-  task_prompt  TEXT NOT NULL,
-  title        TEXT,
-  status       TEXT NOT NULL,
-  started_at   INTEGER NOT NULL,
-  ended_at     INTEGER
+  id                 TEXT PRIMARY KEY,
+  repo_path          TEXT NOT NULL,
+  task_prompt        TEXT NOT NULL,
+  title              TEXT,
+  claude_session_id  TEXT,
+  status             TEXT NOT NULL,
+  started_at         INTEGER NOT NULL,
+  ended_at           INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -112,8 +113,10 @@ export class SqliteStorage implements Storage {
   /** Additive migrations for stores created before a column existed. */
   private migrate(): void {
     const cols = this.db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
-    if (!cols.some((c) => c.name === "title")) {
-      this.db.exec("ALTER TABLE sessions ADD COLUMN title TEXT");
+    const has = (name: string) => cols.some((c) => c.name === name);
+    if (!has("title")) this.db.exec("ALTER TABLE sessions ADD COLUMN title TEXT");
+    if (!has("claude_session_id")) {
+      this.db.exec("ALTER TABLE sessions ADD COLUMN claude_session_id TEXT");
     }
   }
 
@@ -141,6 +144,24 @@ export class SqliteStorage implements Storage {
       | SessionRow
       | undefined;
     return row === undefined ? null : rowToSession(row);
+  }
+
+  listSessions(): Session[] {
+    const rows = this.db
+      .prepare("SELECT * FROM sessions ORDER BY started_at ASC")
+      .all() as SessionRow[];
+    return rows.map(rowToSession);
+  }
+
+  setClaudeSessionId(id: string, claudeId: string): void {
+    this.db.prepare("UPDATE sessions SET claude_session_id = ? WHERE id = ?").run(claudeId, id);
+  }
+
+  getClaudeSessionId(id: string): string | null {
+    const row = this.db.prepare("SELECT claude_session_id FROM sessions WHERE id = ?").get(id) as
+      | { claude_session_id: string | null }
+      | undefined;
+    return row?.claude_session_id ?? null;
   }
 
   setSessionStatus(id: string, status: SessionStatus, endedAt: number | null = null): void {

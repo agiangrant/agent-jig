@@ -30,6 +30,20 @@ describe("SqliteStorage", () => {
     expect(store.getSession(session.id)?.title).toBe("XLSX importer");
   });
 
+  it("lists all sessions ordered by start time", () => {
+    const a = store.createSession({ repoPath: "/a", taskPrompt: "t" });
+    const b = store.createSession({ repoPath: "/b", taskPrompt: "t" });
+    expect(store.listSessions().map((s) => s.id)).toEqual([a.id, b.id]);
+    expect(store.listSessions()).toHaveLength(2);
+  });
+
+  it("stores and reads back the SDK session id for resume", () => {
+    const s = store.createSession({ repoPath: "/r", taskPrompt: "t" });
+    expect(store.getClaudeSessionId(s.id)).toBeNull();
+    store.setClaudeSessionId(s.id, "claude-abc");
+    expect(store.getClaudeSessionId(s.id)).toBe("claude-abc");
+  });
+
   it("assigns monotonic per-session seq numbers", () => {
     const a = store.createSession({ repoPath: "/a", taskPrompt: "t" });
     const b = store.createSession({ repoPath: "/b", taskPrompt: "t" });

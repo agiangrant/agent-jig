@@ -34,6 +34,8 @@ and the steering channel are all *views over that log*. Don't invent parallel st
 
 The server is a **session manager**, not one session: `apps/server` hosts a `SessionManager` of `GovernedSession` bundles (each its own pacer/agent-host/sidecar/worktree/broadcaster), over one shared store/analyzer/narrator. `POST /sessions` creates, `GET /sessions` lists. Websockets are **scoped per connection** by `ws://…?session=<id>` (message shapes stay unchanged — no sessionId field). `governor run` starts a persistent server (or attaches a session to a running one via HTTP); the UI has vertical session tabs + a "New session" form and polls `GET /sessions`. The server stays up across sessions (Ctrl-C to stop).
 
+**Persistence/reconnect.** Sessions outlive process restarts. On boot `SessionManager.restore()` rehydrates every stored session: a `running` one whose last event is within `RESUME_WINDOW_MS` (6h) and which has a captured SDK session id **resumes its agent** (`runGovernedSession({ resume })` — the SDK id is captured from the message stream's `session_id` and stored in `sessions.claude_session_id`); anything else comes back **detached** (`GovernedSession` with an inert `running` — full history/diffs replay from the store, no live agent), with interrupted `running` sessions flipped to `paused`. A `GovernedSession` thus has three modes: fresh / resume / detached. The web client persists the active session id (URL hash + localStorage) so a browser refresh reconnects to the same tab.
+
 ## Conventions
 
 - TypeScript ESM, **Node 24+**, **pnpm** workspace. Internal packages export raw `./src/index.ts`

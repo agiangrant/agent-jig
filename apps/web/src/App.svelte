@@ -12,6 +12,18 @@ let sessions = $state<Session[]>([]);
 let activeId = $state<string | null>(null);
 let sidebarOpen = $state(true);
 
+// Remember the active session across refreshes/restarts (URL hash wins, then storage).
+const ACTIVE_KEY = "governor:activeSession";
+function savedActiveId(): string | null {
+  const fromHash = location.hash.slice(1);
+  if (fromHash) return fromHash;
+  try {
+    return localStorage.getItem(ACTIVE_KEY);
+  } catch {
+    return null;
+  }
+}
+
 // --- Resizable sidebar ---
 const MIN_W = 180;
 const MAX_W = 520;
@@ -36,7 +48,11 @@ function onResizeKey(e: KeyboardEvent) {
 async function loadSessions() {
   try {
     sessions = (await (await fetch(`${httpBase}/sessions`)).json()) as Session[];
-    if (activeId === null && sessions[0]) select(sessions[0].id);
+    if (activeId === null && sessions.length > 0) {
+      const preferred = savedActiveId();
+      const pick = preferred && sessions.some((s) => s.id === preferred) ? preferred : sessions[0]?.id;
+      if (pick) select(pick);
+    }
   } catch {
     /* server may be momentarily unavailable */
   }
@@ -44,6 +60,12 @@ async function loadSessions() {
 function select(id: string) {
   if (id === activeId) return;
   activeId = id;
+  try {
+    localStorage.setItem(ACTIVE_KEY, id);
+  } catch {
+    /* storage may be unavailable */
+  }
+  location.hash = id;
   conn.connect(`${wsBase}?session=${id}`);
 }
 void loadSessions();

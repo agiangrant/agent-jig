@@ -100,6 +100,8 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
   const narrator = narrationOn ? createNarrator() : null;
 
   const manager = new SessionManager({ store, analyzer, narrator, queryImpl: opts.queryImpl });
+  // Bring back sessions persisted from a previous run (e.g. a dev-server restart).
+  manager.restore();
   if (opts.repoPath && opts.prompt) {
     manager.create({ repoPath: opts.repoPath, prompt: opts.prompt, mode: opts.mode });
   }

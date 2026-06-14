@@ -51,4 +51,39 @@ describe("runGovernedSession", () => {
     expect((reasoning?.payload as { text: string }).text).toContain("rate-limits");
     store.close();
   });
+
+  it("resumes a prior SDK session and reports its session id", async () => {
+    const store = new SqliteStorage(":memory:");
+    const session = store.createSession({ repoPath: "/r", taskPrompt: "original task" });
+
+    let capturedResume: string | undefined;
+    const queryImpl = ((args: { options?: { resume?: string } }) => {
+      capturedResume = args.options?.resume;
+      async function* gen() {
+        yield { type: "system", subtype: "init", session_id: "claude-xyz" };
+        yield { type: "result", subtype: "success", session_id: "claude-xyz" };
+      }
+      return Object.assign(gen(), {
+        interrupt: async () => {},
+        setPermissionMode: async () => {},
+        setModel: async () => {},
+      });
+    }) as unknown as RunSessionDeps["queryImpl"];
+
+    const seen: string[] = [];
+    const running = runGovernedSession({
+      session,
+      prompt: "original task",
+      pacer: new Pacer("realtime"),
+      store,
+      queryImpl,
+      resume: "claude-xyz",
+      onSessionId: (id) => seen.push(id),
+    });
+    await running.result;
+
+    expect(capturedResume).toBe("claude-xyz");
+    expect(seen).toEqual(["claude-xyz"]);
+    store.close();
+  });
 });

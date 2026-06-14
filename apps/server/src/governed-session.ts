@@ -26,7 +26,18 @@ export interface GovernedSessionDeps {
   analyzer: StructuralAnalyzer | null;
   narrator: Narrator | null;
   queryImpl?: RunSessionDeps["queryImpl"];
+  /** Resume a prior SDK session (cross-process) instead of starting the agent fresh. */
+  resumeClaudeId?: string;
+  /** View-only rehydration: reconnect to stored state without running an agent. */
+  detached?: boolean;
 }
+
+/** Stand-in for a session with no live agent (detached/view-only rehydration). */
+const INERT_RUNNING: RunningSession = {
+  result: Promise.resolve(),
+  sendDirective: () => {},
+  interrupt: async () => {},
+};
 
 /** A compact transcript of the agent's activity, for the sidecar's context. */
 function buildTranscript(events: GovernorEvent[]): string {
@@ -74,7 +85,9 @@ export class GovernedSession {
     this.store = deps.store;
     this.analyzer = deps.analyzer;
     this.narrator = deps.narrator;
-    this.pacer = new Pacer(deps.mode ?? deps.store.getConfig().defaultMode);
+    const detached = deps.detached ?? false;
+    // Restore the dial from the last change so a reconnected session keeps its pace.
+    this.pacer = new Pacer(deps.mode ?? this.restoreMode() ?? deps.store.getConfig().defaultMode);
 
     const narrator = deps.narrator;
     const onEvent = (event: GovernorEvent) => {
@@ -92,19 +105,36 @@ export class GovernedSession {
       this.broadcaster.broadcast({ type: "dial_state", mode });
     };
 
-    this.running = runGovernedSession({
-      session: deps.session,
-      prompt: deps.session.taskPrompt,
-      pacer: this.pacer,
-      store: this.store,
-      worktree: new Worktree(this.repoPath),
-      onEvent,
-      queryImpl: deps.queryImpl,
-      askQuestion: (input) => this.askHuman(input),
-    });
+    this.running = detached
+      ? INERT_RUNNING
+      : runGovernedSession({
+          session: deps.session,
+          prompt: deps.session.taskPrompt,
+          pacer: this.pacer,
+          store: this.store,
+          worktree: new Worktree(this.repoPath),
+          onEvent,
+          queryImpl: deps.queryImpl,
+          askQuestion: (input) => this.askHuman(input),
+          resume: deps.resumeClaudeId,
+          onSessionId: (cid) => this.store.setClaudeSessionId(this.id, cid),
+        });
 
     this.sidecar = new Sidecar({ repoPath: this.repoPath, queryImpl: deps.queryImpl });
-    this.initTitle(deps.session.taskPrompt);
+    // Only brand-new sessions need a title generated; rehydrated ones already have one.
+    if (!detached && deps.resumeClaudeId === undefined) this.initTitle(deps.session.taskPrompt);
+  }
+
+  /** The dial mode from the last dial_change event, if any. */
+  private restoreMode(): DialMode | null {
+    const events = this.store.listEvents(this.id);
+    for (let i = events.length - 1; i >= 0; i--) {
+      if (events[i]?.type === "dial_change") {
+        const mode = ((events[i]?.payload ?? {}) as { mode?: DialMode }).mode;
+        if (mode) return mode;
+      }
+    }
+    return null;
   }
 
   /**

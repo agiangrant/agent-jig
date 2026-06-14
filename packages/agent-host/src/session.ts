@@ -22,6 +22,10 @@ export interface RunSessionDeps {
   worktree?: Worktree;
   /** Presents an agent `AskUserQuestion` to the human; resolves to the answer text. */
   askQuestion?: (input: Record<string, unknown>) => Promise<string>;
+  /** Resume a prior SDK session (cross-process) instead of starting fresh. */
+  resume?: string;
+  /** Fires once with the SDK session id so it can be persisted for later resume. */
+  onSessionId?: (id: string) => void;
 }
 
 export interface RunningSession {
@@ -51,8 +55,12 @@ export function runGovernedSession(deps: RunSessionDeps): RunningSession {
   });
 
   const input = new InputStream();
-  input.push(deps.prompt); // the initial task
-  // The initial task is one turn; each injected directive adds another. End the
+  // Fresh: the task is the first turn. Resume: history already holds the task, so
+  // push a short nudge to make the agent continue (streaming input acts on turns).
+  input.push(
+    deps.resume ? "Resume the task you were working on; continue where you left off." : deps.prompt,
+  );
+  // The first turn is one turn; each injected directive adds another. End the
   // input stream only once every expected turn has produced its `result`, so we
   // never close it out from under the agent while it's acting on a directive.
   let expectedResults = 1;
@@ -63,6 +71,7 @@ export function runGovernedSession(deps: RunSessionDeps): RunningSession {
       cwd: session.repoPath,
       permissionMode: "default",
       canUseTool,
+      ...(deps.resume ? { resume: deps.resume } : {}),
       ...deps.options,
     },
   });
@@ -70,13 +79,23 @@ export function runGovernedSession(deps: RunSessionDeps): RunningSession {
   const start = store.appendEvent({
     sessionId: session.id,
     type: "session_start",
-    payload: { prompt: deps.prompt },
+    payload: { prompt: deps.prompt, resumed: Boolean(deps.resume) },
   });
   onEvent?.(start);
+
+  let sessionIdSeen = false;
 
   const result = (async () => {
     try {
       for await (const message of runner) {
+        // Capture the SDK session id once so the session can be resumed later.
+        if (!sessionIdSeen) {
+          const sid = (message as { session_id?: string }).session_id;
+          if (sid) {
+            sessionIdSeen = true;
+            deps.onSessionId?.(sid);
+          }
+        }
         if (message.type === "assistant") {
           // Capture the agent's reasoning — the raw "why" that feeds narration.
           for (const block of message.message.content) {
