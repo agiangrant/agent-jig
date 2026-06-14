@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   DEFAULT_CONFIG,
+  type GateState,
   type GovernorEvent,
   type Session,
   type SessionConfig,
@@ -180,6 +181,10 @@ export class SqliteStorage implements Storage {
 
   setSessionTitle(id: string, title: string): void {
     this.db.prepare("UPDATE sessions SET title = ? WHERE id = ?").run(title, id);
+  }
+
+  setEventGateState(eventId: string, gateState: GateState | null): void {
+    this.db.prepare("UPDATE events SET gate_state = ? WHERE id = ?").run(gateState, eventId);
   }
 
   appendEvent(event: NewEvent): GovernorEvent {

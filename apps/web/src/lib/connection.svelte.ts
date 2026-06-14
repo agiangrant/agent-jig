@@ -62,9 +62,19 @@ export class GovernorConnection {
       case "queue_state":
         this.queue = msg.pending;
         break;
-      case "event":
-        this.events = [...this.events, msg.event];
+      case "event": {
+        // Upsert by id: a re-emitted event (e.g. a resolved question's tool_call)
+        // replaces the earlier one rather than duplicating.
+        const i = this.events.findIndex((e) => e.id === msg.event.id);
+        if (i === -1) {
+          this.events = [...this.events, msg.event];
+        } else {
+          const next = [...this.events];
+          next[i] = msg.event;
+          this.events = next;
+        }
         break;
+      }
       case "change_view":
         this.changeView = msg.view;
         break;

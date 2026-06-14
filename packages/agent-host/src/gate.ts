@@ -68,6 +68,10 @@ export function makeCanUseTool(deps: GateDeps): CanUseTool {
     // the headless SDK try to render a TTY prompt — the stuck state we're fixing.
     if (isQuestion && askQuestion) {
       const answer = await askQuestion(input);
+      // Resolved — clear the pending marker so history doesn't show it forever
+      // (re-emit the same event id; clients upsert by id).
+      store.setEventGateState(call.id, "open");
+      onEvent?.({ ...call, gateState: "open" });
       return { behavior: "deny", message: answer };
     }
 

@@ -76,7 +76,7 @@ describe("makeCanUseTool", () => {
     expect(decision).toEqual({ behavior: "deny", message: answer });
     const events = store.listEvents(sessionId);
     expect(events.map((e) => e.type)).toEqual(["tool_call"]);
-    expect(events[0]?.gateState).toBe("pending"); // shown as awaiting in history
+    expect(events[0]?.gateState).toBe("open"); // resolved — no longer "pending"
     expect(pacer.queue).toEqual([]); // not a write — never enters the edit queue
   });
 

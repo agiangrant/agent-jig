@@ -39,6 +39,8 @@ export interface Storage {
 
   /** Appends an event, assigning id/seq/ts, and returns the stored row. */
   appendEvent(event: NewEvent): GovernorEvent;
+  /** Update a stored event's gate state (e.g. a resolved question is no longer pending). */
+  setEventGateState(eventId: string, gateState: GateState | null): void;
   listEvents(sessionId: string): GovernorEvent[];
 
   getConfig(): SessionConfig;

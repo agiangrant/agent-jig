@@ -44,6 +44,19 @@ describe("SqliteStorage", () => {
     expect(store.getClaudeSessionId(s.id)).toBe("claude-abc");
   });
 
+  it("updates an event's gate state in place", () => {
+    const s = store.createSession({ repoPath: "/r", taskPrompt: "t" });
+    const e = store.appendEvent({
+      sessionId: s.id,
+      type: "tool_call",
+      toolName: "AskUserQuestion",
+      gateState: "pending",
+      payload: {},
+    });
+    store.setEventGateState(e.id, "open");
+    expect(store.listEvents(s.id)[0]?.gateState).toBe("open");
+  });
+
   it("deletes a session and its events", () => {
     const s = store.createSession({ repoPath: "/r", taskPrompt: "t" });
     store.appendEvent({ sessionId: s.id, type: "session_start", payload: {} });
