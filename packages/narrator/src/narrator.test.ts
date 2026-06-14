@@ -84,4 +84,24 @@ describe("createNarrator", () => {
       expect(await boom.summarize("something")).toBeNull();
     });
   });
+
+  describe("title", () => {
+    it("titles a prompt under the title system prompt, cleaned up", async () => {
+      let seenSystem = "";
+      const narrator = createNarrator({
+        generate: async (system) => {
+          seenSystem = system;
+          return '"XLSX Importer."';
+        },
+      });
+      expect(await narrator.title("Build an importer that ingests xlsx files…")).toBe(
+        "XLSX Importer",
+      );
+      expect(seenSystem).toContain("title");
+    });
+
+    it("is null for an empty prompt", async () => {
+      expect(await createNarrator({ generate: async () => "x" }).title("   ")).toBeNull();
+    });
+  });
 });

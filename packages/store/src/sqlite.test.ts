@@ -16,8 +16,18 @@ describe("SqliteStorage", () => {
   it("creates and reads back a session", () => {
     const session = store.createSession({ repoPath: "/tmp/repo", taskPrompt: "do a thing" });
     expect(session.status).toBe("running");
+    expect(session.title).toBeNull();
     expect(store.getSession(session.id)).toEqual(session);
     expect(store.getSession("missing")).toBeNull();
+  });
+
+  it("sets and reads back a session title", () => {
+    const session = store.createSession({
+      repoPath: "/tmp/repo",
+      taskPrompt: "build the importer",
+    });
+    store.setSessionTitle(session.id, "XLSX importer");
+    expect(store.getSession(session.id)?.title).toBe("XLSX importer");
   });
 
   it("assigns monotonic per-session seq numbers", () => {

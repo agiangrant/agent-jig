@@ -200,7 +200,7 @@ function steer() {
     {#each sessions as s (s.id)}
       <button class="tab" class:active={s.id === activeId} onclick={() => select(s.id)}>
         <span class="t-repo">{repoName(s.repoPath)}</span>
-        <span class="t-task">{s.taskPrompt}</span>
+        <span class="t-task">{s.title ?? s.taskPrompt}</span>
         <span class="t-status {s.status}">{s.status}</span>
       </button>
     {/each}
@@ -226,16 +226,23 @@ function steer() {
     {#if activeId === null}
       <p class="empty big">No session selected. Create one to start supervising.</p>
     {:else}
-      <header>
-        <span class="conn" class:on={conn.connected}>{conn.connected ? "live" : "offline"}</span>
-        <button class="dial" class:slowed={conn.mode === "slowed"} onclick={toggle}>
-          {conn.mode === "slowed" ? "◐ Slowed" : "● Real-time"}
-        </button>
+      <header class:shifted={!sidebarOpen}>
+        <div class="head-top">
+          <h1 class="title">{conn.session?.title ?? conn.session?.taskPrompt ?? "Session"}</h1>
+          <div class="head-controls">
+            <span class="conn" class:on={conn.connected}>{conn.connected ? "live" : "offline"}</span>
+            <button class="dial" class:slowed={conn.mode === "slowed"} onclick={toggle}>
+              {conn.mode === "slowed" ? "◐ Slowed" : "● Real-time"}
+            </button>
+          </div>
+        </div>
+        {#if conn.session?.taskPrompt}
+          <details class="prompt-acc">
+            <summary>Prompt</summary>
+            <p>{conn.session.taskPrompt}</p>
+          </details>
+        {/if}
       </header>
-
-      {#if conn.session}
-        <p class="task">{conn.session.taskPrompt}</p>
-      {/if}
 
       <div class="cols">
         <section class="left">
@@ -562,12 +569,56 @@ function steer() {
     font-size: 14px;
   }
   header {
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    max-height: 40vh;
+    overflow-y: auto;
+    background: var(--bg, #0c0d12);
+    border-bottom: 1px solid var(--line);
+    margin: 0 -24px 0;
+    padding: 14px 24px 12px;
+  }
+  header.shifted {
+    padding-left: 52px;
+  }
+  .head-top {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
     gap: 12px;
-    border-bottom: 1px solid var(--line);
-    padding-bottom: 12px;
+  }
+  .title {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    font-size: 18px;
+    font-weight: 700;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .head-controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+  }
+  .prompt-acc {
+    margin-top: 8px;
+  }
+  .prompt-acc summary {
+    cursor: pointer;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--muted);
+  }
+  .prompt-acc p {
+    margin: 8px 0 2px;
+    color: var(--muted);
+    white-space: pre-wrap;
+    border-left: 2px solid var(--line);
+    padding-left: 12px;
   }
   .conn {
     font-size: 11px;
@@ -590,12 +641,6 @@ function steer() {
     border-color: var(--warn);
     color: var(--warn);
   }
-  .task {
-    color: var(--muted);
-    border-left: 2px solid var(--line);
-    padding-left: 12px;
-  }
-
   .cols {
     display: grid;
     grid-template-columns: minmax(0, 1fr) 360px;

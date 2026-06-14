@@ -29,6 +29,7 @@ export interface Storage {
   createSession(input: NewSession): Session;
   getSession(id: string): Session | null;
   setSessionStatus(id: string, status: SessionStatus, endedAt?: number | null): void;
+  setSessionTitle(id: string, title: string): void;
 
   /** Appends an event, assigning id/seq/ts, and returns the stored row. */
   appendEvent(event: NewEvent): GovernorEvent;

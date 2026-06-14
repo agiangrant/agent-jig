@@ -23,6 +23,8 @@ export const Session = z.object({
   id: z.string(),
   repoPath: z.string(),
   taskPrompt: z.string(),
+  /** A short generated title for the prompt; null until generated. */
+  title: z.string().nullable().default(null),
   status: SessionStatus,
   startedAt: z.number().int(),
   endedAt: z.number().int().nullable(),

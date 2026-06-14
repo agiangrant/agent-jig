@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   id           TEXT PRIMARY KEY,
   repo_path    TEXT NOT NULL,
   task_prompt  TEXT NOT NULL,
+  title        TEXT,
   status       TEXT NOT NULL,
   started_at   INTEGER NOT NULL,
   ended_at     INTEGER
@@ -62,6 +63,7 @@ interface SessionRow {
   id: string;
   repo_path: string;
   task_prompt: string;
+  title: string | null;
   status: string;
   started_at: number;
   ended_at: number | null;
@@ -88,6 +90,7 @@ function rowToSession(r: SessionRow): Session {
     id: r.id,
     repoPath: r.repo_path,
     taskPrompt: r.task_prompt,
+    title: r.title,
     status: r.status as SessionStatus,
     startedAt: r.started_at,
     endedAt: r.ended_at,
@@ -103,6 +106,15 @@ export class SqliteStorage implements Storage {
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.db.exec(SCHEMA);
+    this.migrate();
+  }
+
+  /** Additive migrations for stores created before a column existed. */
+  private migrate(): void {
+    const cols = this.db.prepare("PRAGMA table_info(sessions)").all() as { name: string }[];
+    if (!cols.some((c) => c.name === "title")) {
+      this.db.exec("ALTER TABLE sessions ADD COLUMN title TEXT");
+    }
   }
 
   createSession(input: NewSession): Session {
@@ -110,14 +122,15 @@ export class SqliteStorage implements Storage {
       id: randomUUID(),
       repoPath: input.repoPath,
       taskPrompt: input.taskPrompt,
+      title: null,
       status: "running",
       startedAt: Date.now(),
       endedAt: null,
     };
     this.db
       .prepare(
-        `INSERT INTO sessions (id, repo_path, task_prompt, status, started_at, ended_at)
-         VALUES (@id, @repoPath, @taskPrompt, @status, @startedAt, @endedAt)`,
+        `INSERT INTO sessions (id, repo_path, task_prompt, title, status, started_at, ended_at)
+         VALUES (@id, @repoPath, @taskPrompt, @title, @status, @startedAt, @endedAt)`,
       )
       .run(session);
     return session;
@@ -134,6 +147,10 @@ export class SqliteStorage implements Storage {
     this.db
       .prepare("UPDATE sessions SET status = ?, ended_at = ? WHERE id = ?")
       .run(status, endedAt, id);
+  }
+
+  setSessionTitle(id: string, title: string): void {
+    this.db.prepare("UPDATE sessions SET title = ? WHERE id = ?").run(title, id);
   }
 
   appendEvent(event: NewEvent): GovernorEvent {

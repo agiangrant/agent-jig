@@ -21,6 +21,13 @@ Rules:
 - Name the concrete thing being changed; avoid vague words like "update" or "improve".
 - No trailing period, no quotes, no markdown, no preamble — just the phrase.`;
 
+// Titles a whole task prompt — a tab label, like a PR title.
+const TITLE_SYSTEM = `You title a coding task for a session tab, given the developer's prompt. Reply with a SHORT noun phrase (max 6 words) capturing the gist — like a concise PR title.
+
+Rules:
+- Title case-ish, no trailing period, no quotes, no markdown, no preamble.
+- Name the concrete feature/area; avoid filler like "task to" or "implement".`;
+
 export interface NarrationInput {
   toolName: string;
   path: string;
@@ -35,6 +42,8 @@ export interface Narrator {
   narrate(input: NarrationInput): Promise<string | null>;
   /** A short imperative intent label for a group's reasoning, or null. */
   summarize(reasoning: string): Promise<string | null>;
+  /** A short title for a task prompt (a tab label), or null. */
+  title(prompt: string): Promise<string | null>;
 }
 
 /** Generates a completion from (system, user). Injectable so the register is testable offline. */
@@ -133,18 +142,26 @@ export function createNarrator(opts?: { model?: string; generate?: GenerateFn })
         return null;
       }
     },
-    async summarize(reasoning) {
-      const r = reasoning.trim();
-      if (r.length === 0) return null;
-      try {
-        const text = (await generate(INTENT_SYSTEM, clip(r)))
-          .trim()
-          .replace(/^["']|["']$/g, "")
-          .replace(/\.$/, "");
-        return text.length === 0 ? null : text.slice(0, 80);
-      } catch {
-        return null;
-      }
-    },
+    summarize: (reasoning) => phrase(generate, INTENT_SYSTEM, reasoning),
+    title: (prompt) => phrase(generate, TITLE_SYSTEM, prompt),
   };
+}
+
+/** Generate a short, cleaned-up phrase (quotes/period stripped, capped), or null. */
+async function phrase(
+  generate: GenerateFn,
+  system: string,
+  source: string,
+): Promise<string | null> {
+  const s = source.trim();
+  if (s.length === 0) return null;
+  try {
+    const text = (await generate(system, clip(s)))
+      .trim()
+      .replace(/^["']|["']$/g, "")
+      .replace(/\.$/, "");
+    return text.length === 0 ? null : text.slice(0, 80);
+  } catch {
+    return null;
+  }
 }

@@ -97,6 +97,24 @@ export class GovernedSession {
     });
 
     this.sidecar = new Sidecar({ repoPath: this.repoPath, queryImpl: deps.queryImpl });
+    this.initTitle(deps.session.taskPrompt);
+  }
+
+  /**
+   * Give the session a short title for the tab/header. Set a heuristic one at
+   * once (so nothing ever shows a raw prompt), then upgrade to an LLM title when
+   * a narrator is configured, broadcasting the refreshed session state.
+   */
+  private initTitle(prompt: string): void {
+    this.store.setSessionTitle(this.id, heuristicTitle(prompt));
+    const narrator = this.narrator;
+    if (narrator === null) return;
+    void narrator.title(prompt).then((title) => {
+      if (title) {
+        this.store.setSessionTitle(this.id, title);
+        this.broadcaster.broadcast({ type: "session_state", session: this.meta() });
+      }
+    });
   }
 
   meta(): Session {
@@ -271,9 +289,18 @@ export class GovernedSession {
       id: this.id,
       repoPath: this.repoPath,
       taskPrompt: "",
+      title: null,
       status: "running",
       startedAt: 0,
       endedAt: null,
     };
   }
+}
+
+/** First line of the prompt, capped — a stand-in title until the LLM titles it. */
+function heuristicTitle(prompt: string): string {
+  const firstLine = prompt.trim().split("\n")[0]?.trim() ?? "";
+  const base = firstLine || prompt.trim();
+  if (base.length === 0) return "Untitled session";
+  return base.length <= 56 ? base : `${base.slice(0, 55).trimEnd()}…`;
 }
