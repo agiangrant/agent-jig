@@ -11,9 +11,11 @@
   /* Readable text on accent/warn-filled buttons & badges (theme-derived). */
   --on-accent: #0c0d12;
   --on-warn: #0c0d12;
-  /* Fonts & tab size (overridden by Settings). */
+  /* Fonts, sizes & tab size (overridden by Settings). */
   --ui-font: ui-monospace, "SF Mono", Menlo, monospace;
   --code-font: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --ui-font-size: 14px;
+  --code-font-size: 12px;
   --tab-size: 2;
   color-scheme: dark;
 }
@@ -26,7 +28,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font-size: 14px;
+  font-size: var(--ui-font-size);
   line-height: 1.5;
   font-family: var(--ui-font);
 }

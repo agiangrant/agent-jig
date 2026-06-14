@@ -43,7 +43,7 @@ $effect(() => {
 <style>
   .code {
     overflow: auto;
-    font-size: 12px;
+    font-size: var(--code-font-size);
     line-height: 1.5;
   }
   /* Let the container's background (plain or diff tint) show; shiki bakes its

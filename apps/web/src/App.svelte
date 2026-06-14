@@ -869,9 +869,26 @@ function onGlobalKey(e: KeyboardEvent) {
       </div>
 
       <div class="set-row">
+        <span class="set-label">UI size</span>
+        <div class="set-control">
+          <button class="set-seg" class:on={settings.uiSize === "small"} onclick={() => settings.setUiSize("small")}>Small</button>
+          <button class="set-seg" class:on={settings.uiSize === "medium"} onclick={() => settings.setUiSize("medium")}>Medium</button>
+          <button class="set-seg" class:on={settings.uiSize === "large"} onclick={() => settings.setUiSize("large")}>Large</button>
+        </div>
+      </div>
+
+      <div class="set-row">
         <label for="set-codefont">Code font</label>
         <div class="set-control">
           <input id="set-codefont" list="font-suggestions" placeholder="default" value={settings.codeFont} oninput={(e) => settings.setCodeFont(e.currentTarget.value)} />
+        </div>
+      </div>
+
+      <div class="set-row">
+        <label for="set-codesize">Code font size</label>
+        <div class="set-control">
+          <input id="set-codesize" type="number" min="9" max="28" value={settings.codeFontSize} oninput={(e) => settings.setCodeFontSize(Number(e.currentTarget.value))} />
+          <span class="set-hint">px</span>
         </div>
       </div>
 
