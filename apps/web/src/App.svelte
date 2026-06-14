@@ -141,6 +141,22 @@ function narrationFor(editId: string): string {
   const e = conn.events.find((x) => x.type === "narration" && x.editId === editId);
   return ((e?.payload ?? {}) as { text?: string }).text ?? "";
 }
+
+// Per-diff collapse in "Changes by intent". Default: expanded while you review,
+// auto-collapsed once the edit is acted on (acked/rejected). A manual toggle
+// records an override that wins from then on, so acting on *other* edits never
+// disturbs a diff you've deliberately opened or closed.
+let collapseOverride = $state<Record<string, boolean>>({});
+function isActedOn(editId: string): boolean {
+  return conn.events.some((e) => e.type === "ack" && e.editId === editId);
+}
+function isCollapsed(editId: string): boolean {
+  const override = collapseOverride[editId];
+  return override !== undefined ? override : isActedOn(editId);
+}
+function toggleCollapse(editId: string) {
+  collapseOverride[editId] = !isCollapsed(editId);
+}
 function riskLabel(r: number): "high" | "med" | "low" {
   if (r >= 0.8) return "high";
   if (r >= 0.4) return "med";
@@ -251,31 +267,41 @@ function steer() {
               <div class="group">
                 <p class="label">{g.label}</p>
                 {#if g.pattern}
-                  {@const rep = editEvent(g.pattern.editIds[0] ?? "")}
-                  <div class="edit collapsed">
-                    <span class="badge">⊟ {g.pattern.count} structurally identical edits</span>
-                    <code>{filePath(rep?.payload)} + {g.pattern.count - 1} more</code>
-                    {#if narrationFor(g.pattern.editIds[0] ?? "")}
-                      <p class="why-line">💬 {narrationFor(g.pattern.editIds[0] ?? "")}</p>
+                  {@const pid = g.pattern.editIds[0] ?? ""}
+                  {@const rep = editEvent(pid)}
+                  <div class="edit">
+                    <button class="edit-head" onclick={() => toggleCollapse(pid)}>
+                      <span class="chev">{isCollapsed(pid) ? "▸" : "▾"}</span>
+                      <span class="badge">⊟ {g.pattern.count} structurally identical edits</span>
+                      <code>{filePath(rep?.payload)} + {g.pattern.count - 1} more</code>
+                    </button>
+                    {#if narrationFor(pid)}<p class="why-line">💬 {narrationFor(pid)}</p>{/if}
+                    {#if !isCollapsed(pid)}
+                      <DiffView toolName={rep?.toolName ?? ""} payload={rep?.payload} />
                     {/if}
-                    <DiffView toolName={rep?.toolName ?? ""} payload={rep?.payload} />
                   </div>
                   {#each g.outliers as id (id)}
                     {@const e = editEvent(id)}
                     <div class="edit outlier">
-                      <span class="badge warn">⚠ differs from the pattern — worth a look</span>
-                      <code>{filePath(e?.payload)}</code>
+                      <button class="edit-head" onclick={() => toggleCollapse(id)}>
+                        <span class="chev">{isCollapsed(id) ? "▸" : "▾"}</span>
+                        <span class="badge warn">⚠ differs from the pattern — worth a look</span>
+                        <code>{filePath(e?.payload)}</code>
+                      </button>
                       {#if narrationFor(id)}<p class="why-line">💬 {narrationFor(id)}</p>{/if}
-                      <DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />
+                      {#if !isCollapsed(id)}<DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />{/if}
                     </div>
                   {/each}
                 {:else}
                   {#each g.editIds as id (id)}
                     {@const e = editEvent(id)}
                     <div class="edit">
-                      <code>{filePath(e?.payload)}</code>
+                      <button class="edit-head" onclick={() => toggleCollapse(id)}>
+                        <span class="chev">{isCollapsed(id) ? "▸" : "▾"}</span>
+                        <code>{filePath(e?.payload)}</code>
+                      </button>
                       {#if narrationFor(id)}<p class="why-line">💬 {narrationFor(id)}</p>{/if}
-                      <DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />
+                      {#if !isCollapsed(id)}<DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />{/if}
                     </div>
                   {/each}
                 {/if}
@@ -672,6 +698,32 @@ function steer() {
   .group .edit code {
     color: var(--muted);
     font-size: 12px;
+  }
+  .edit-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: 0;
+    padding: 2px 0;
+    cursor: pointer;
+    font: inherit;
+  }
+  .edit-head .chev {
+    color: var(--accent);
+    font-size: 11px;
+    width: 12px;
+    flex-shrink: 0;
+  }
+  .edit-head .badge {
+    margin-right: 0;
+  }
+  .edit-head code {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .badge {
     display: inline-block;
