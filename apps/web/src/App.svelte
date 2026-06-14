@@ -1294,7 +1294,7 @@ function onGlobalKey(e: KeyboardEvent) {
     background: var(--bg, #0c0d12);
     border-bottom: 1px solid var(--line);
     margin: 0 -24px 0;
-    padding: 7px 24px;
+    padding: 5px 24px;
   }
   header.shifted {
     padding-left: 52px;
@@ -1321,7 +1321,7 @@ function onGlobalKey(e: KeyboardEvent) {
     flex-shrink: 0;
   }
   .prompt-acc {
-    margin-top: 5px;
+    margin-top: 3px;
   }
   .prompt-acc summary {
     cursor: pointer;
@@ -1350,9 +1350,10 @@ function onGlobalKey(e: KeyboardEvent) {
     color: var(--fg);
     border: 1px solid var(--line);
     border-radius: 999px;
-    padding: 6px 16px;
+    padding: 3px 12px;
     cursor: pointer;
     font: inherit;
+    font-size: 12px;
   }
   .dial.slowed {
     border-color: var(--warn);
