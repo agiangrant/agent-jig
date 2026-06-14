@@ -55,17 +55,26 @@ pnpm --filter @governor/web build                 # build the UI once (served by
 pnpm --filter @governor/cli start -- run "your task here" --repo /path/to/target
 ```
 
-**Narration** (per-edit "why" lines) uses a cheap model (Haiku) via the base Anthropic SDK,
-which needs an `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) — this is separate from the
-agent's own CLI auth. Without one, narration is silently off; set the key (or `GOVERNOR_NARRATE=0`
-to force off) to control it.
+**Narration** (per-edit "why" lines + intent-group labels) uses a cheap model (Haiku) via the
+base Anthropic SDK, which needs an `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) — separate
+from the agent's own CLI auth. Without one, narration is silently off; set the key (or
+`GOVERNOR_NARRATE=0` to force off) to control it. To run narration/labels on **any
+OpenAI-compatible endpoint** (e.g. a local Ollama) instead, set `GOVERNOR_LLM_BASE_URL` (plus
+`GOVERNOR_LLM_MODEL`, and `GOVERNOR_LLM_API_KEY` if the endpoint needs one). The governed agent
+itself still runs on the Claude Agent SDK.
 
-Or, for UI development with hot reload, run the server and Vite separately:
+### Dev mode (hot reload)
+
+One command starts both the server (auto-restarts on change) and the Vite UI (HMR), so edits
+don't need a relaunch:
 
 ```bash
-GOVERNOR_REPO=/path/to/target GOVERNOR_TASK="your task" pnpm --filter @governor/server dev
-pnpm --filter @governor/web dev                    # http://localhost:5173, talks to ws on :4318
+pnpm dev          # server on :4318, UI on http://localhost:5173 (talks to ws on :4318)
 ```
+
+It starts clean — create sessions from the UI's **New Session** modal. To also spin up one
+session at boot, set `GOVERNOR_REPO=/path/to/target` (and optionally `GOVERNOR_TASK="…"`).
+Server code changes restart the process (sessions reset); UI changes hot-reload in place.
 
 ## Status
 

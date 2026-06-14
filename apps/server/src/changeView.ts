@@ -14,22 +14,28 @@ interface EditPayload {
  * with AST-sameness analysis. Analysis is best-effort — without an analyzer the
  * groups still render, just without collapse/outlier marks.
  */
-export function buildChangeView(
-  events: GovernorEvent[],
-  analyzer: StructuralAnalyzer | null,
-): ChangeView {
-  // A rejected edit was denied at the gate — it never reached disk, so it is not
-  // a change. Drop its tool_call before grouping (keep reasoning for labels).
+/**
+ * Events with rejected edits removed: a rejected edit was denied at the gate, so
+ * it never reached disk and is not a change (reasoning/directives are kept, since
+ * grouping relies on them). Shared so the view and its label enrichment group the
+ * same set of edits the same way.
+ */
+export function visibleEvents(events: GovernorEvent[]): GovernorEvent[] {
   const rejected = new Set<string>();
   for (const e of events) {
     if (e.type === "ack" && e.gateState === "rejected" && e.editId !== null) rejected.add(e.editId);
   }
-  const visible =
-    rejected.size === 0
-      ? events
-      : events.filter(
-          (e) => !(e.type === "tool_call" && e.editId !== null && rejected.has(e.editId)),
-        );
+  if (rejected.size === 0) return events;
+  return events.filter(
+    (e) => !(e.type === "tool_call" && e.editId !== null && rejected.has(e.editId)),
+  );
+}
+
+export function buildChangeView(
+  events: GovernorEvent[],
+  analyzer: StructuralAnalyzer | null,
+): ChangeView {
+  const visible = visibleEvents(events);
 
   const callByEditId = new Map<string, GovernorEvent>();
   for (const e of visible) {

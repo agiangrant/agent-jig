@@ -18,12 +18,26 @@ export interface IntentGroupRaw extends IntentGroup {
  * server can replace the label with a crisp LLM-generated summary.
  */
 export function groupByIntent(events: readonly GovernorEvent[]): IntentGroupRaw[] {
-  // Reduce to the only tokens that matter: reasoning, and write-class edits.
-  type Tok = { kind: "reason"; label: string; raw: string } | { kind: "edit"; editId: string };
+  // Reduce to the tokens that matter: reasoning, write-class edits, and steering
+  // directives. A reasoning that immediately follows a directive is the agent's
+  // *reply to the steer* ("Noted — I'll keep comments minimal…"), not fresh
+  // intent — flag it so it never becomes a group's label.
+  type Tok =
+    | { kind: "reason"; label: string; raw: string; conversational: boolean }
+    | { kind: "edit"; editId: string }
+    | { kind: "directive" };
   const toks: Tok[] = [];
   for (const ev of events) {
     if (ev.type === "reasoning") {
-      toks.push({ kind: "reason", label: labelFrom(ev.payload), raw: rawText(ev.payload) });
+      const prev = toks[toks.length - 1];
+      toks.push({
+        kind: "reason",
+        label: labelFrom(ev.payload),
+        raw: rawText(ev.payload),
+        conversational: prev?.kind === "directive",
+      });
+    } else if (ev.type === "directive") {
+      toks.push({ kind: "directive" });
     } else if (ev.type === "tool_call" && ev.editId !== null && isWriteClass(ev.toolName ?? "")) {
       toks.push({ kind: "edit", editId: ev.editId });
     }
@@ -52,32 +66,33 @@ export function groupByIntent(events: readonly GovernorEvent[]): IntentGroupRaw[
     runs.push({ start, end: i - 1, editIds, label: null, reason: "" });
   }
 
+  // The nearest *real* reasoning in a direction, skipping directives and the
+  // agent's conversational replies to them (so a steer carries the prior intent
+  // forward to the redone edits). Stops at another run's edits.
+  const seek = (from: number, step: 1 | -1): number | null => {
+    for (let i = from; i >= 0 && i < toks.length; i += step) {
+      const t = toks[i];
+      if (!t || t.kind === "edit") return null;
+      if (t.kind === "reason" && !t.conversational) return i;
+    }
+    return null;
+  };
+
   const consumed = new Set<number>();
-  const reasonAt = (idx: number): { label: string; raw: string } | null => {
+  const assign = (run: Run, idx: number | null) => {
+    if (idx === null || consumed.has(idx)) return;
     const t = toks[idx];
-    return t?.kind === "reason" ? t : null;
+    if (t?.kind !== "reason") return;
+    run.label = t.label;
+    run.reason = t.raw;
+    consumed.add(idx);
   };
 
   // Prefer a leading reasoning (explain-then-edit); each labels at most one run.
-  for (const run of runs) {
-    const lead = run.start - 1;
-    const t = reasonAt(lead);
-    if (t !== null && !consumed.has(lead)) {
-      run.label = t.label;
-      run.reason = t.raw;
-      consumed.add(lead);
-    }
-  }
+  for (const run of runs) assign(run, seek(run.start - 1, -1));
   // Fall back to a trailing reasoning (edit-then-explain) for unlabeled runs.
   for (const run of runs) {
-    if (run.label !== null) continue;
-    const trail = run.end + 1;
-    const t = reasonAt(trail);
-    if (t !== null && !consumed.has(trail)) {
-      run.label = t.label;
-      run.reason = t.raw;
-      consumed.add(trail);
-    }
+    if (run.label === null) assign(run, seek(run.end + 1, 1));
   }
 
   return runs.map((run) => ({

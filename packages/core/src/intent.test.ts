@@ -23,6 +23,7 @@ function ev(partial: Partial<GovernorEvent>): GovernorEvent {
 
 const reasoning = (text: string) => ev({ type: "reasoning", payload: { text } });
 const edit = (editId: string, toolName = "Edit") => ev({ type: "tool_call", toolName, editId });
+const directive = (text: string) => ev({ type: "directive", payload: { text } });
 
 describe("groupByIntent", () => {
   it("labels edits with the reasoning that precedes them", () => {
@@ -91,6 +92,25 @@ describe("groupByIntent", () => {
     ]);
     expect(groups).toEqual([
       { id: "a", label: "Actually, edit this.", editIds: ["a"], reason: "Actually, edit this." },
+    ]);
+  });
+
+  it("carries the prior intent forward when steering inserts a conversational reply", () => {
+    // The original edit was rejected by the steer, so it's gone from the visible
+    // stream; the agent's "Noted…" reply must not become the redone edit's label.
+    const groups = groupByIntent([
+      reasoning("Create CSV adapter foundation for XLSX transformation."),
+      directive("Re: your edit — prefer self-documenting code over comments"),
+      reasoning("Noted — I'll keep comments minimal across all files."),
+      edit("b"),
+    ]);
+    expect(groups).toEqual([
+      {
+        id: "b",
+        label: "Create CSV adapter foundation for XLSX transformation.",
+        editIds: ["b"],
+        reason: "Create CSV adapter foundation for XLSX transformation.",
+      },
     ]);
   });
 

@@ -14,7 +14,7 @@ import type { StructuralAnalyzer } from "@governor/structural";
 import { Worktree } from "@governor/worktree";
 import type { WebSocket } from "ws";
 import { Broadcaster } from "./broadcaster.ts";
-import { buildChangeView } from "./changeView.ts";
+import { buildChangeView, visibleEvents } from "./changeView.ts";
 
 export interface GovernedSessionDeps {
   session: Session;
@@ -146,7 +146,7 @@ export class GovernedSession {
   private enrichIntentLabels(view: ChangeView, events: GovernorEvent[]): void {
     const narrator = this.narrator;
     if (narrator === null) return;
-    const reasonById = new Map(groupByIntent(events).map((g) => [g.id, g.reason]));
+    const reasonById = new Map(groupByIntent(visibleEvents(events)).map((g) => [g.id, g.reason]));
     for (const group of view) {
       const cached = this.intentLabels.get(group.id);
       if (cached) {
