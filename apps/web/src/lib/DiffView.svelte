@@ -14,22 +14,7 @@ const writeContent = $derived(typeof p.content === "string" ? p.content : "");
 const hunks: Hunk[] = $derived(toHunks(toolName, payload));
 </script>
 
-{#snippet lineToggle()}
-  <button
-    class="seg"
-    class:on={diffMode.lineNumbers}
-    title="Toggle line numbers"
-    onclick={() => diffMode.toggleLineNumbers()}
-  >
-    # Lines
-  </button>
-{/snippet}
-
 {#if isWrite}
-  <div class="controls">
-    <span class="spacer"></span>
-    {@render lineToggle()}
-  </div>
   <div class="block plain">
     <Code code={writeContent} path={filePath} numbered={diffMode.lineNumbers} />
   </div>
@@ -42,8 +27,6 @@ const hunks: Hunk[] = $derived(toHunks(toolName, payload));
       <button class="seg" class:on={diffMode.side === "before"} onclick={() => (diffMode.side = "before")}>Before</button>
       <button class="seg" class:on={diffMode.side === "after"} onclick={() => (diffMode.side = "after")}>After</button>
     {/if}
-    <span class="spacer"></span>
-    {@render lineToggle()}
   </div>
 
   <div class="diff">
@@ -90,9 +73,6 @@ const hunks: Hunk[] = $derived(toHunks(toolName, payload));
   .seg.on {
     color: var(--fg);
     border-color: var(--accent);
-  }
-  .spacer {
-    flex: 1;
   }
   .diff,
   .block.plain {
