@@ -54,6 +54,9 @@ importers:
       '@governor/narrator':
         specifier: workspace:*
         version: link:../../packages/narrator
+      '@governor/sidecar':
+        specifier: workspace:*
+        version: link:../../packages/sidecar
       '@governor/store':
         specifier: workspace:*
         version: link:../../packages/store
@@ -135,6 +138,15 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^0.104.1
         version: 0.104.1(zod@3.25.76)
+
+  packages/sidecar:
+    dependencies:
+      '@anthropic-ai/claude-agent-sdk':
+        specifier: ^0.3.175
+        version: 0.3.175(@anthropic-ai/sdk@0.104.1(zod@3.25.76))(@modelcontextprotocol/sdk@1.29.0(zod@3.25.76))(zod@3.25.76)
+      '@governor/agent-host':
+        specifier: workspace:*
+        version: link:../agent-host
 
   packages/store:
     dependencies:

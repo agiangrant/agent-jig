@@ -92,5 +92,23 @@ for (const g of changeView) {
   }
 }
 
+const ASK = process.env.GOVERNOR_ASK;
+if (ASK) {
+  console.log(`${ts()} ❓ ${ASK}`);
+  const reply = await new Promise<string>((resolve) => {
+    const onMsg = (raw: Buffer) => {
+      const m = JSON.parse(String(raw));
+      if (m.type === "sidecar_reply") {
+        ws.off("message", onMsg);
+        resolve(m.text);
+      }
+    };
+    ws.on("message", onMsg);
+    ws.send(JSON.stringify({ type: "sidecar_message", text: ASK }));
+    setTimeout(() => resolve("(no reply within 90s)"), 90000);
+  });
+  console.log(`${ts()} 🗣️  SIDECAR: ${reply}`);
+}
+
 ws.close();
 await server.close();

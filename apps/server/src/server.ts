@@ -11,6 +11,7 @@ import {
 } from "@governor/contracts";
 import { isWriteClass, Pacer } from "@governor/core";
 import { createNarrator } from "@governor/narrator";
+import { Sidecar } from "@governor/sidecar";
 import { SqliteStorage } from "@governor/store";
 import { StructuralAnalyzer } from "@governor/structural";
 import { Worktree } from "@governor/worktree";
@@ -49,6 +50,23 @@ export interface RunningServer {
 
 function defaultWebRoot(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "../../web/dist");
+}
+
+/** A compact transcript of the agent's activity, for the sidecar's context. */
+function buildTranscript(events: GovernorEvent[]): string {
+  const lines: string[] = [];
+  for (const e of events) {
+    if (e.type === "reasoning") {
+      lines.push(`AGENT THOUGHT: ${((e.payload ?? {}) as { text?: string }).text ?? ""}`);
+    } else if (e.type === "tool_call" && e.toolName) {
+      const path = ((e.payload ?? {}) as { file_path?: string }).file_path;
+      lines.push(`AGENT TOOL: ${e.toolName}${path ? ` ${path}` : ""}`);
+    } else if (e.type === "directive") {
+      lines.push(`DEVELOPER STEERED: ${((e.payload ?? {}) as { text?: string }).text ?? ""}`);
+    }
+  }
+  const text = lines.join("\n");
+  return text.length > 6000 ? text.slice(-6000) : text;
 }
 
 /** True for same-machine browser origins (any port) and non-browser clients (no Origin). */
@@ -145,6 +163,16 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
     queryImpl: opts.queryImpl,
   });
 
+  // Read-only interlocutor for provenance Q&A; uses the agent's CLI auth.
+  const sidecar = new Sidecar({ repoPath, queryImpl: opts.queryImpl });
+  const askSidecar = (text: string) => {
+    const transcript = buildTranscript(store.listEvents(session.id));
+    const prompt = `Transcript of the agent so far:\n${transcript || "(nothing yet)"}\n\nDeveloper's question: ${text}`;
+    void sidecar
+      .ask(prompt)
+      .then((reply) => broadcaster.broadcast({ type: "sidecar_reply", text: reply }));
+  };
+
   // Inject a human directive into the agent, anchored to an edit's path when given.
   const sendDirective = (text: string, anchorEditId: string | null) => {
     let composed = text;
@@ -201,6 +229,7 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
       if (msg.type === "set_dial") pacer.setMode(msg.mode);
       else if (msg.type === "ack_edit") pacer.ack(msg.editId);
       else if (msg.type === "send_directive") sendDirective(msg.text, msg.anchorEditId);
+      else if (msg.type === "sidecar_message") askSidecar(msg.text);
     });
   });
 
@@ -211,6 +240,7 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
     done: running.result,
     async close() {
       await running.interrupt().catch(() => {});
+      await sidecar.close().catch(() => {});
       wss.close();
       await new Promise<void>((res) => httpServer.close(() => res()));
       store.close();

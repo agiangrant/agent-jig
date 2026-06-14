@@ -15,6 +15,7 @@ export class GovernorConnection {
   queue = $state<PendingEdit[]>([]);
   events = $state<GovernorEvent[]>([]);
   changeView = $state<ChangeView>([]);
+  sidecar = $state<Array<{ role: "user" | "assistant"; text: string }>>([]);
   connected = $state(false);
 
   #ws: WebSocket | null = null;
@@ -48,6 +49,9 @@ export class GovernorConnection {
       case "change_view":
         this.changeView = msg.view;
         break;
+      case "sidecar_reply":
+        this.sidecar = [...this.sidecar, { role: "assistant", text: msg.text }];
+        break;
     }
   }
 
@@ -65,5 +69,10 @@ export class GovernorConnection {
 
   sendDirective(text: string, anchorEditId: string | null = null): void {
     this.#send({ type: "send_directive", text, anchorEditId });
+  }
+
+  askSidecar(text: string): void {
+    this.sidecar = [...this.sidecar, { role: "user", text }];
+    this.#send({ type: "sidecar_message", text });
   }
 }

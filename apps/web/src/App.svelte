@@ -31,6 +31,14 @@ function steer() {
   directive = "";
 }
 
+let question = $state("");
+function ask() {
+  const text = question.trim();
+  if (!text) return;
+  conn.askSidecar(text);
+  question = "";
+}
+
 function riskLabel(r: number): "high" | "med" | "low" {
   if (r >= 0.8) return "high";
   if (r >= 0.4) return "med";
@@ -143,6 +151,29 @@ function reasonText(p: unknown): string {
         </div>
       {/each}
     {/if}
+  </section>
+
+  <section class="sidecar">
+    <h2>Sidecar <span class="hint">— ask about provenance; it won't steer the agent</span></h2>
+    <div class="chat">
+      {#each conn.sidecar as m, i (i)}
+        <div class="msg {m.role}">{m.text}</div>
+      {/each}
+    </div>
+    <form
+      class="ask"
+      onsubmit={(e) => {
+        e.preventDefault();
+        ask();
+      }}
+    >
+      <input
+        type="text"
+        bind:value={question}
+        placeholder="e.g. where did this list of categories come from?"
+      />
+      <button type="submit">Ask</button>
+    </form>
   </section>
 
   <section class="timeline">
@@ -424,5 +455,57 @@ function reasonText(p: unknown): string {
   }
   .directive .dtext {
     color: var(--fg);
+  }
+
+  .hint {
+    color: var(--muted);
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .chat {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .msg {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 12px;
+    max-width: 85%;
+    white-space: pre-wrap;
+  }
+  .msg.user {
+    align-self: flex-end;
+    background: var(--panel);
+    color: var(--fg);
+  }
+  .msg.assistant {
+    align-self: flex-start;
+    background: #0f1015;
+    color: var(--fg);
+  }
+  .ask {
+    display: flex;
+    gap: 8px;
+  }
+  .ask input {
+    flex: 1;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 12px;
+    color: var(--fg);
+    font: inherit;
+  }
+  .ask button {
+    background: var(--panel);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 0 16px;
+    cursor: pointer;
+    font: inherit;
   }
 </style>

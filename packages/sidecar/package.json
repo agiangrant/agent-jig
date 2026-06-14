@@ -1,0 +1,13 @@
+{
+  "name": "@governor/sidecar",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.175",
+    "@governor/agent-host": "workspace:*"
+  }
+}

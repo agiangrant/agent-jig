@@ -173,6 +173,7 @@ export const ServerToClient = z.discriminatedUnion("type", [
   z.object({ type: z.literal("queue_state"), pending: z.array(PendingEdit) }),
   z.object({ type: z.literal("dial_state"), mode: DialMode }),
   z.object({ type: z.literal("change_view"), view: ChangeView }),
+  z.object({ type: z.literal("sidecar_reply"), text: z.string() }),
 ]);
 export type ServerToClient = z.infer<typeof ServerToClient>;
 
@@ -184,5 +185,6 @@ export const ClientToServer = z.discriminatedUnion("type", [
     text: z.string(),
     anchorEditId: z.string().nullable().default(null),
   }),
+  z.object({ type: z.literal("sidecar_message"), text: z.string() }),
 ]);
 export type ClientToServer = z.infer<typeof ClientToServer>;
