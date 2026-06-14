@@ -63,6 +63,8 @@ export class GovernedSession {
     const onEvent = (event: GovernorEvent) => {
       this.broadcaster.broadcast({ type: "event", event });
       if (event.type === "reasoning" || event.type === "tool_call") this.broadcastChangeView();
+      // A rejection removes an edit from the change view — rebuild so it drops out.
+      else if (event.type === "ack" && event.gateState === "rejected") this.broadcastChangeView();
       if (narrator !== null) this.narrate(narrator, event);
     };
 
@@ -128,10 +130,13 @@ export class GovernedSession {
   }
 
   /**
-   * Steering. If it anchors a still-pending edit, steering *is* a reject: discard
-   * that edit and hand the agent the guidance so it revises (the gate denies the
-   * tool with this reason). Otherwise inject the directive at the next tool-call
-   * boundary. Either way, log a directive event for the transcript.
+   * Steering reroutes the agent. While an edit is pending the agent is parked
+   * inside `canUseTool` awaiting the gate, so a directive injected into the input
+   * stream can't reach it — steering must *reject* the pending edit(s), handing
+   * the guidance back as the deny reason so the agent unblocks and reroutes. We
+   * reject the named edit if one was anchored, else every pending edit (in slowed
+   * mode that is the single edit the agent is blocked on). With nothing pending,
+   * the agent is mid-thought: inject the directive for the next tool-call boundary.
    */
   private sendDirective(text: string, anchorEditId: string | null): void {
     let composed = text;
@@ -143,8 +148,13 @@ export class GovernedSession {
       if (path) composed = `Re: your edit to ${path} — ${text}`;
     }
 
-    if (anchorEditId !== null && this.pacer.isPending(anchorEditId)) {
-      this.pacer.reject(anchorEditId, composed);
+    const targets =
+      anchorEditId !== null && this.pacer.isPending(anchorEditId)
+        ? [anchorEditId]
+        : this.pacer.queue.map((p) => p.editId);
+
+    if (targets.length > 0) {
+      for (const id of targets) this.pacer.reject(id, composed);
     } else {
       this.running.sendDirective(composed);
     }

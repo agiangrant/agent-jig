@@ -18,12 +18,25 @@ export function buildChangeView(
   events: GovernorEvent[],
   analyzer: StructuralAnalyzer | null,
 ): ChangeView {
-  const callByEditId = new Map<string, GovernorEvent>();
+  // A rejected edit was denied at the gate — it never reached disk, so it is not
+  // a change. Drop its tool_call before grouping (keep reasoning for labels).
+  const rejected = new Set<string>();
   for (const e of events) {
+    if (e.type === "ack" && e.gateState === "rejected" && e.editId !== null) rejected.add(e.editId);
+  }
+  const visible =
+    rejected.size === 0
+      ? events
+      : events.filter(
+          (e) => !(e.type === "tool_call" && e.editId !== null && rejected.has(e.editId)),
+        );
+
+  const callByEditId = new Map<string, GovernorEvent>();
+  for (const e of visible) {
     if (e.type === "tool_call" && e.editId !== null) callByEditId.set(e.editId, e);
   }
 
-  return groupByIntent(events).map((group) => {
+  return groupByIntent(visible).map((group) => {
     if (analyzer === null) {
       return { ...group, pattern: null, outliers: [] };
     }
