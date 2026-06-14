@@ -47,6 +47,16 @@ function parseColor(color: string): [number, number, number] | null {
   return null;
 }
 
+/** A usable solid color: present, parseable, and not (near-)transparent. */
+function isVisible(color: string | undefined): color is string {
+  if (!color) return false;
+  const s = color.trim().toLowerCase();
+  if (s === "transparent") return false;
+  if (/^#[0-9a-f]{6}00$/.test(s) || /^#[0-9a-f]{3}0$/.test(s)) return false; // alpha 00
+  if (/rgba?\([^)]*,\s*0(\.0+)?\)$/.test(s)) return false; // rgba(…, 0)
+  return parseColor(s) !== null;
+}
+
 /** Black or white, whichever reads on `color` — so colored buttons are legible. */
 function contrastText(color: string): string {
   const rgb = parseColor(color);
@@ -91,14 +101,16 @@ async function applyChrome(name: string): Promise<void> {
   set("--ok", c["gitDecoration.addedResourceForeground"], c["editorGutter.addedBackground"]);
   set("--danger", c["editorError.foreground"], c["gitDecoration.deletedResourceForeground"]);
 
-  // Accent/warn back filled colored buttons & badges — derive a readable text
-  // color from each so themes with a dark accent don't render black-on-black.
-  const accent = pick(c.focusBorder, c["button.background"], c["textLink.foreground"]);
+  // Accent/warn back filled buttons & badges (and color accent text/links), so
+  // prefer a saturated, visible source. `focusBorder` is a poor accent on many
+  // light themes (transparent or near-white), so it's the last resort. Derive a
+  // readable text color from each so no theme renders black-on-black/white-on-white.
+  const accent = [c["textLink.foreground"], c["button.background"], c.focusBorder].find(isVisible);
   if (accent) {
     root.setProperty("--accent", accent);
     root.setProperty("--on-accent", contrastText(accent));
   }
-  const warn = pick(c["editorWarning.foreground"], c["list.warningForeground"]);
+  const warn = [c["editorWarning.foreground"], c["list.warningForeground"]].find(isVisible);
   if (warn) {
     root.setProperty("--warn", warn);
     root.setProperty("--on-warn", contrastText(warn));
