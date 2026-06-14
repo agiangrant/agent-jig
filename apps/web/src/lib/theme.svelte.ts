@@ -163,6 +163,12 @@ class ThemeState {
     void applyChrome(name);
   }
 
+  /** Apply a theme live without persisting — for hover/preview in the palette. */
+  preview(name: string): void {
+    this.current = name;
+    void applyChrome(name);
+  }
+
   /** Import a VSCode theme JSON string; selects it on success. Returns its name. */
   async importTheme(json: string): Promise<string> {
     const parsed = JSON.parse(json) as VsTheme;

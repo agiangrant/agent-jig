@@ -385,24 +385,29 @@ function submitAnswers(question: { id: string; questions: { question: string }[]
   conn.answerQuestion(question.id, answers);
 }
 
-// --- Command palette (⌘P) ---
+// --- Command palette (⌘K / ⌘P) ---
 interface Command {
   id: string;
   label: string;
   hint?: string;
+  /** Extra text to match against (e.g. a session's repo). */
+  search?: string;
+  /** A theme to live-preview while highlighted (theme sub-view). */
+  themeName?: string;
+  /** Keep the palette open after running (e.g. opening a sub-view). */
+  keepOpen?: boolean;
   run: () => void;
 }
 let paletteOpen = $state(false);
 let paletteQuery = $state("");
 let paletteIndex = $state(0);
+let paletteView = $state<"root" | "theme">("root");
+let themeReturn: string | null = null; // theme to revert to if a preview is cancelled
 
-const commands = $derived<Command[]>([
-  ...theme.available.map((t) => ({
-    id: `theme:${t}`,
-    label: `Theme: ${t}`,
-    hint: t === theme.current ? "current" : undefined,
-    run: () => theme.select(t),
-  })),
+// Top level: actions + tabs. Themes live behind a single "Theme…" sub-view to
+// avoid flooding the list.
+const rootCommands = $derived<Command[]>([
+  { id: "theme", label: "Theme…", hint: theme.current, keepOpen: true, run: enterThemeView },
   { id: "diff:split", label: "Diff layout: Side-by-side", run: () => diffMode.set("split") },
   { id: "diff:unified", label: "Diff layout: Unified", run: () => diffMode.set("unified") },
   { id: "diff:ba", label: "Diff layout: Before/After", run: () => diffMode.set("ba") },
@@ -423,28 +428,70 @@ const commands = $derived<Command[]>([
   { id: "settings", label: "Settings…", run: () => (showSettings = true) },
   { id: "new", label: "New session…", run: openNew },
   { id: "import-theme", label: "Import VSCode theme…", run: () => (showTheme = true) },
-  ...sessions
-    .filter((s) => s.id !== activeId)
-    .map((s) => ({
-      id: `go:${s.id}`,
-      label: `Go to: ${s.title ?? s.taskPrompt}`,
-      run: () => select(s.id),
-    })),
+  // Tabs: searchable by title and repo.
+  ...orderedSessions.map((s) => ({
+    id: `go:${s.id}`,
+    label: `Go to: ${s.title ?? s.taskPrompt}`,
+    hint: s.id === activeId ? "current" : repoName(s.repoPath),
+    search: `${s.taskPrompt} ${s.repoPath}`,
+    run: () => select(s.id),
+  })),
 ]);
+const themeCommands = $derived<Command[]>(
+  theme.available.map((t) => ({
+    id: `theme:${t}`,
+    label: t,
+    themeName: t,
+    run: () => {
+      theme.select(t);
+      themeReturn = null; // committed — don't revert on close
+    },
+  })),
+);
+const commandList = $derived(paletteView === "theme" ? themeCommands : rootCommands);
 const filtered = $derived(
   paletteQuery.trim() === ""
-    ? commands
-    : commands.filter((c) => c.label.toLowerCase().includes(paletteQuery.toLowerCase())),
+    ? commandList
+    : commandList.filter((c) =>
+        `${c.label} ${c.search ?? ""}`.toLowerCase().includes(paletteQuery.toLowerCase()),
+      ),
 );
+
+// Live-preview the highlighted theme while in the theme sub-view.
+$effect(() => {
+  if (!paletteOpen || paletteView !== "theme") return;
+  const c = filtered[Math.min(paletteIndex, filtered.length - 1)];
+  if (c?.themeName) theme.preview(c.themeName);
+});
 
 function openPalette() {
   paletteOpen = true;
+  paletteView = "root";
+  paletteQuery = "";
+  paletteIndex = 0;
+}
+function closePalette() {
+  if (paletteView === "theme" && themeReturn !== null) theme.preview(themeReturn); // revert uncommitted
+  paletteOpen = false;
+  paletteView = "root";
+  themeReturn = null;
+}
+function enterThemeView() {
+  themeReturn = theme.current;
+  paletteView = "theme";
+  paletteQuery = "";
+  paletteIndex = Math.max(0, theme.available.indexOf(theme.current)); // highlight current first
+}
+function exitThemeView() {
+  if (themeReturn !== null) theme.preview(themeReturn); // revert preview
+  themeReturn = null;
+  paletteView = "root";
   paletteQuery = "";
   paletteIndex = 0;
 }
 function runCommand(c: Command) {
-  paletteOpen = false;
   c.run();
+  if (!c.keepOpen) closePalette();
 }
 function paletteKey(e: KeyboardEvent) {
   if (e.key === "ArrowDown") {
@@ -466,10 +513,14 @@ function onGlobalKey(e: KeyboardEvent) {
     return;
   }
   if (e.key === "Escape") {
+    if (paletteOpen) {
+      if (paletteView === "theme") exitThemeView();
+      else closePalette();
+      return;
+    }
     showNew = false;
     showTheme = false;
     showSettings = false;
-    paletteOpen = false;
   }
 }
 </script>
@@ -743,11 +794,19 @@ function onGlobalKey(e: KeyboardEvent) {
 
 {#if paletteOpen}
   <div class="overlay top">
-    <button class="backdrop" aria-label="Close" onclick={() => (paletteOpen = false)}></button>
+    <button class="backdrop" aria-label="Close" onclick={closePalette}></button>
     <div class="palette" role="dialog" aria-modal="true">
+      {#if paletteView === "theme"}
+        <div class="palette-crumb">
+          <button type="button" class="link-btn" onclick={exitThemeView}>‹ Back</button>
+          <span>Theme — ↑/↓ to preview, Enter to apply, Esc to cancel</span>
+        </div>
+      {/if}
       <input
         class="palette-input"
-        placeholder="Type a command — theme, diff layout, session…"
+        placeholder={paletteView === "theme"
+          ? "Search themes…"
+          : "Type a command — theme, diff layout, session…"}
         bind:value={paletteQuery}
         oninput={() => (paletteIndex = 0)}
         onkeydown={paletteKey}
@@ -1774,6 +1833,15 @@ function onGlobalKey(e: KeyboardEvent) {
     border-radius: 12px;
     overflow: hidden;
     box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+  }
+  .palette-crumb {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--line);
+    font-size: 11px;
+    color: var(--muted);
   }
   .palette-input {
     width: 100%;
