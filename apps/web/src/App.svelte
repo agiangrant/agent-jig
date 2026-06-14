@@ -129,13 +129,14 @@ function steer() {
           {#if conn.queue.length === 0}
             <p class="empty">Nothing waiting — the agent is working, or idle.</p>
           {:else}
-            <ul>
+            <ul class="queue">
               {#each conn.queue as edit (edit.editId)}
                 <li>
                   <div class="row">
                     <span class="risk {riskLabel(edit.risk)}">{riskLabel(edit.risk)}</span>
                     <code>{edit.path}</code>
                     <span class="tool">{edit.toolName}</span>
+                    <button class="reject" onclick={() => conn.rejectEdit(edit.editId)}>Reject</button>
                     <button onclick={() => conn.ack(edit.editId)}>Ack</button>
                   </div>
                   <DiffView toolName={edit.toolName} payload={editEvent(edit.editId)?.payload} />
@@ -433,6 +434,11 @@ function steer() {
     font: inherit;
     font-weight: 600;
   }
+  .row button.reject {
+    background: transparent;
+    color: var(--danger);
+    border: 1px solid var(--danger);
+  }
 
   .risk {
     font-size: 10px;
@@ -536,6 +542,9 @@ function steer() {
   }
   .gate.bypassed {
     color: var(--muted);
+  }
+  .gate.rejected {
+    color: var(--danger);
   }
   .oob .warn {
     color: var(--warn);

@@ -10,8 +10,8 @@ import { z } from "zod";
 export const DialMode = z.enum(["realtime", "slowed"]);
 export type DialMode = z.infer<typeof DialMode>;
 
-/** Lifecycle of one gated call: open (passed through) → pending → released | bypassed. */
-export const GateState = z.enum(["open", "pending", "released", "bypassed"]);
+/** Lifecycle of one gated call: open (passed through) → pending → released | bypassed | rejected. */
+export const GateState = z.enum(["open", "pending", "released", "bypassed", "rejected"]);
 export type GateState = z.infer<typeof GateState>;
 
 // --- Sessions ---
@@ -180,6 +180,7 @@ export type ServerToClient = z.infer<typeof ServerToClient>;
 export const ClientToServer = z.discriminatedUnion("type", [
   z.object({ type: z.literal("set_dial"), mode: DialMode }),
   z.object({ type: z.literal("ack_edit"), editId: z.string() }),
+  z.object({ type: z.literal("reject_edit"), editId: z.string(), reason: z.string() }),
   z.object({
     type: z.literal("send_directive"),
     text: z.string(),

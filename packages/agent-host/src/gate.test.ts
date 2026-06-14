@@ -48,6 +48,24 @@ describe("makeCanUseTool", () => {
     expect(events[1]?.editId).toBe(pending?.editId);
   });
 
+  it("denies a write with the reason when the human rejects it", async () => {
+    const pacer = new Pacer("slowed");
+    const gate = makeCanUseTool({ sessionId, pacer, store });
+
+    const decision = gate("Edit", { file_path: "src/x.ts" }, opts);
+    await tick();
+    pacer.reject(pacer.queue[0]?.editId ?? "", "use the existing helper");
+
+    await expect(decision).resolves.toEqual({
+      behavior: "deny",
+      message: "use the existing helper",
+    });
+    const events = store.listEvents(sessionId);
+    expect(events.map((e) => e.type)).toEqual(["tool_call", "ack"]);
+    expect(events[1]?.gateState).toBe("rejected");
+    expect((events[1]?.payload as { reason?: string }).reason).toBe("use the existing helper");
+  });
+
   it("lets read-class tools pass immediately and does not enqueue them", async () => {
     const pacer = new Pacer("slowed");
     const gate = makeCanUseTool({ sessionId, pacer, store });

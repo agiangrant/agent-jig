@@ -78,6 +78,15 @@ export class GovernorConnection {
     this.#send({ type: "ack_edit", editId });
   }
 
+  /** Discard a pending edit. Optional reason is handed to the agent to revise. */
+  rejectEdit(editId: string, reason = ""): void {
+    this.conversation = [
+      ...this.conversation,
+      { role: "steer", text: reason ? `Rejected: ${reason}` : "Rejected edit" },
+    ];
+    this.#send({ type: "reject_edit", editId, reason });
+  }
+
   sendDirective(text: string, anchorEditId: string | null = null): void {
     this.conversation = [...this.conversation, { role: "steer", text }];
     this.#send({ type: "send_directive", text, anchorEditId });

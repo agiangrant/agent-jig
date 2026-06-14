@@ -17,7 +17,7 @@ function settledSoon<T>(p: Promise<T>): Promise<boolean> {
 describe("Pacer", () => {
   it("passes writes straight through in realtime", async () => {
     const pacer = new Pacer("realtime");
-    await expect(pacer.requestGate(edit("a", 1))).resolves.toBe("open");
+    await expect(pacer.requestGate(edit("a", 1))).resolves.toEqual({ state: "open" });
     expect(pacer.queue).toEqual([]);
   });
 
@@ -27,10 +27,21 @@ describe("Pacer", () => {
 
     expect(await settledSoon(gate)).toBe(false);
     expect(pacer.queue).toHaveLength(1);
-    expect(pacer.queue[0]?.editId).toBe("a");
+    expect(pacer.isPending("a")).toBe(true);
 
     expect(pacer.ack("a")).toBe(true);
-    await expect(gate).resolves.toBe("released");
+    await expect(gate).resolves.toEqual({ state: "released" });
+    expect(pacer.queue).toEqual([]);
+  });
+
+  it("rejects a write with the developer's reason", async () => {
+    const pacer = new Pacer("slowed");
+    const gate = pacer.requestGate(edit("a", 1));
+    expect(pacer.reject("a", "use the existing helper instead")).toBe(true);
+    await expect(gate).resolves.toEqual({
+      state: "rejected",
+      reason: "use the existing helper instead",
+    });
     expect(pacer.queue).toEqual([]);
   });
 
@@ -49,14 +60,15 @@ describe("Pacer", () => {
 
     pacer.setMode("realtime");
 
-    await expect(g1).resolves.toBe("bypassed");
-    await expect(g2).resolves.toBe("bypassed");
+    await expect(g1).resolves.toEqual({ state: "bypassed" });
+    await expect(g2).resolves.toEqual({ state: "bypassed" });
     expect(pacer.queue).toEqual([]);
   });
 
-  it("acking an unknown edit is a no-op", () => {
+  it("acking or rejecting an unknown edit is a no-op", () => {
     const pacer = new Pacer("slowed");
     expect(pacer.ack("nope")).toBe(false);
+    expect(pacer.reject("nope", "x")).toBe(false);
   });
 
   it("notifies subscribers on queue and mode changes", async () => {

@@ -58,23 +58,31 @@ export function makeCanUseTool(deps: GateDeps): CanUseTool {
     onEvent?.(call);
 
     if (write && editId !== null) {
-      const state = await pacer.requestGate({
+      const outcome = await pacer.requestGate({
         editId,
         toolName,
         path: path ?? "",
         seq: call.seq,
         risk: risk ?? 0,
       });
-      // Only record a release when the human actually held it ('open' = realtime passthrough).
-      if (state !== "open") {
+      // Record the resolution unless it passed straight through ('open' = realtime).
+      if (outcome.state !== "open") {
         const ack = store.appendEvent({
           sessionId,
           type: "ack",
           editId,
-          gateState: state,
-          payload: {},
+          gateState: outcome.state,
+          payload: outcome.reason ? { reason: outcome.reason } : {},
         });
         onEvent?.(ack);
+      }
+      // Rejected: deny the tool and hand the agent the reason so it revises.
+      if (outcome.state === "rejected") {
+        const message =
+          outcome.reason && outcome.reason.length > 0
+            ? outcome.reason
+            : "The developer rejected this edit; please revise it.";
+        return { behavior: "deny", message };
       }
     }
 

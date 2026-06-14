@@ -105,6 +105,7 @@ export class GovernedSession {
   handle(msg: ClientToServer): void {
     if (msg.type === "set_dial") this.pacer.setMode(msg.mode);
     else if (msg.type === "ack_edit") this.pacer.ack(msg.editId);
+    else if (msg.type === "reject_edit") this.rejectEdit(msg.editId, msg.reason);
     else if (msg.type === "send_directive") this.sendDirective(msg.text, msg.anchorEditId);
     else if (msg.type === "sidecar_message") this.askSidecar(msg.text);
   }
@@ -121,6 +122,17 @@ export class GovernedSession {
     this.broadcaster.broadcast({ type: "change_view", view: this.changeView() });
   }
 
+  /** Discard a pending edit, handing the agent a reason to revise. */
+  private rejectEdit(editId: string, reason: string): void {
+    this.pacer.reject(editId, reason);
+  }
+
+  /**
+   * Steering. If it anchors a still-pending edit, steering *is* a reject: discard
+   * that edit and hand the agent the guidance so it revises (the gate denies the
+   * tool with this reason). Otherwise inject the directive at the next tool-call
+   * boundary. Either way, log a directive event for the transcript.
+   */
   private sendDirective(text: string, anchorEditId: string | null): void {
     let composed = text;
     if (anchorEditId !== null) {
@@ -130,7 +142,13 @@ export class GovernedSession {
       const path = ((call?.payload ?? {}) as { file_path?: string }).file_path;
       if (path) composed = `Re: your edit to ${path} — ${text}`;
     }
-    this.running.sendDirective(composed);
+
+    if (anchorEditId !== null && this.pacer.isPending(anchorEditId)) {
+      this.pacer.reject(anchorEditId, composed);
+    } else {
+      this.running.sendDirective(composed);
+    }
+
     const event = this.store.appendEvent({
       sessionId: this.id,
       type: "directive",
