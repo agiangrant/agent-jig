@@ -31,6 +31,8 @@ export interface GovernedSessionDeps {
   resumeClaudeId?: string;
   /** View-only rehydration: reconnect to stored state without running an agent. */
   detached?: boolean;
+  /** Fired when this session's attention state changes (queue/question/clients). */
+  onAttention?: () => void;
 }
 
 /** Stand-in for a session with no live agent (detached/view-only rehydration). */
@@ -81,6 +83,7 @@ export class GovernedSession {
   private answerQuestion: ((message: string) => void) | null = null;
   /** Set once the human renames the session, so the LLM title won't overwrite it. */
   private titleManual = false;
+  private readonly onAttention: (() => void) | undefined;
 
   constructor(deps: GovernedSessionDeps) {
     this.id = deps.session.id;
@@ -88,6 +91,7 @@ export class GovernedSession {
     this.store = deps.store;
     this.analyzer = deps.analyzer;
     this.narrator = deps.narrator;
+    this.onAttention = deps.onAttention;
     const detached = deps.detached ?? false;
     // Restore the dial from the last change so a reconnected session keeps its pace.
     this.pacer = new Pacer(deps.mode ?? this.restoreMode() ?? deps.store.getConfig().defaultMode);
@@ -101,8 +105,10 @@ export class GovernedSession {
       if (narrator !== null) this.narrate(narrator, event);
     };
 
-    this.pacer.onQueueChange = (pending) =>
+    this.pacer.onQueueChange = (pending) => {
       this.broadcaster.broadcast({ type: "queue_state", pending });
+      this.onAttention?.(); // a queued/acked edit changes this tab's badge
+    };
     this.pacer.onModeChange = (mode) => {
       this.store.appendEvent({ sessionId: this.id, type: "dial_change", payload: { mode } });
       this.broadcaster.broadcast({ type: "dial_state", mode });
@@ -189,6 +195,12 @@ export class GovernedSession {
     this.broadcaster.send(ws, { type: "change_view", view: this.changeView() });
     this.broadcaster.send(ws, { type: "question_state", question: this.question });
     this.broadcaster.add(ws);
+    this.onAttention?.(); // give the new client the current cross-session summary
+  }
+
+  /** Push the cross-session tab summary to this session's connected clients. */
+  pushSummary(sessions: SessionSummary[]): void {
+    this.broadcaster.broadcast({ type: "sessions_summary", sessions });
   }
 
   handle(msg: ClientToServer): void {
@@ -210,6 +222,7 @@ export class GovernedSession {
     const pending: PendingQuestion = { id: randomUUID(), questions };
     this.question = pending;
     this.broadcaster.broadcast({ type: "question_state", question: pending });
+    this.onAttention?.();
     return new Promise<string>((resolve) => {
       this.answerQuestion = resolve;
     });
@@ -229,6 +242,7 @@ export class GovernedSession {
     this.question = null;
     this.answerQuestion = null;
     this.broadcaster.broadcast({ type: "question_state", question: null });
+    this.onAttention?.();
     resolve?.(message);
   }
 

@@ -212,6 +212,9 @@ export const ServerToClient = z.discriminatedUnion("type", [
   z.object({ type: z.literal("change_view"), view: ChangeView }),
   z.object({ type: z.literal("sidecar_reply"), text: z.string() }),
   z.object({ type: z.literal("question_state"), question: PendingQuestion.nullable() }),
+  // Cross-session: the whole tab list with attention state, pushed live so tabs
+  // (incl. inactive ones) update without waiting for the poll.
+  z.object({ type: z.literal("sessions_summary"), sessions: z.array(SessionSummary) }),
 ]);
 export type ServerToClient = z.infer<typeof ServerToClient>;
 

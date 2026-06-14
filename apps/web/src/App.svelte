@@ -71,6 +71,12 @@ function select(id: string) {
 void loadSessions();
 setInterval(loadSessions, 3000);
 
+// Live tab updates: the server pushes the summary on any attention change, so
+// badges refresh instantly; the poll above stays as a backstop.
+$effect(() => {
+  if (conn.summary) sessions = conn.summary;
+});
+
 // --- Rename / close tabs ---
 let editing = $state<string | null>(null);
 let renameText = $state("");

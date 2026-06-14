@@ -7,6 +7,7 @@ import type {
   PendingQuestion,
   ServerToClient,
   Session,
+  SessionSummary,
 } from "@governor/contracts";
 
 /** Live view over the server's websocket stream, exposed as Svelte 5 runes. */
@@ -18,6 +19,8 @@ export class GovernorConnection {
   changeView = $state<ChangeView>([]);
   /** The agent's open question, if it's waiting on the human. */
   question = $state<PendingQuestion | null>(null);
+  /** Live cross-session tab summary (attention badges), pushed by the server. */
+  summary = $state<SessionSummary[] | null>(null);
   /** One unified human↔system conversation: questions, sidecar replies, and steers. */
   conversation = $state<Array<{ role: "you" | "sidecar" | "steer"; text: string }>>([]);
   connected = $state(false);
@@ -33,6 +36,7 @@ export class GovernorConnection {
     this.events = [];
     this.changeView = [];
     this.question = null;
+    this.summary = null;
     this.conversation = [];
     this.connected = false;
 
@@ -69,6 +73,9 @@ export class GovernorConnection {
         break;
       case "question_state":
         this.question = msg.question;
+        break;
+      case "sessions_summary":
+        this.summary = msg.sessions;
         break;
     }
   }

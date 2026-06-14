@@ -60,6 +60,7 @@ export class SessionManager {
           narrator: this.deps.narrator,
           queryImpl: this.deps.queryImpl,
           resumeClaudeId: claudeId ?? undefined,
+          onAttention: () => this.broadcastSummary(),
         });
       } catch {
         // Worktree/repo gone, etc. — fall through to a view-only reconnect.
@@ -77,6 +78,7 @@ export class SessionManager {
         narrator: this.deps.narrator,
         queryImpl: this.deps.queryImpl,
         detached: true,
+        onAttention: () => this.broadcastSummary(),
       });
     } catch {
       return null; // unrecoverable — skip, don't break boot
@@ -100,9 +102,17 @@ export class SessionManager {
       analyzer: this.deps.analyzer,
       narrator: this.deps.narrator,
       queryImpl: this.deps.queryImpl,
+      onAttention: () => this.broadcastSummary(),
     });
     this.sessions.set(session.id, gs);
+    this.broadcastSummary(); // a new tab appears live for other clients
     return gs.meta();
+  }
+
+  /** Push the current tab summary to every connected client across all sessions. */
+  private broadcastSummary(): void {
+    const summary = this.list();
+    for (const gs of this.sessions.values()) gs.pushSummary(summary);
   }
 
   list(): SessionSummary[] {
@@ -121,6 +131,7 @@ export class SessionManager {
       this.sessions.delete(id);
     }
     this.deps.store.deleteSession(id);
+    this.broadcastSummary(); // the closed tab disappears live for other clients
   }
 
   /** Rename a session; returns false if it isn't hosted. */
@@ -128,6 +139,7 @@ export class SessionManager {
     const gs = this.sessions.get(id);
     if (!gs) return false;
     gs.setTitle(title);
+    this.broadcastSummary(); // the new title appears live for other clients
     return true;
   }
 

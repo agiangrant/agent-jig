@@ -134,6 +134,27 @@ describe("startGovernorServer", () => {
     expect(list.find((s) => s.id === created.id)?.taskPrompt).toBe("persist me");
   });
 
+  it("pushes a live sessions_summary to connected clients", async () => {
+    server = await startGovernorServer({ port: 0, dbPath: ":memory:", queryImpl });
+    const session = server.createSession({ repoPath: tmpdir(), prompt: "t" });
+
+    const got: ServerToClient[] = [];
+    const ws = new WebSocket(wsUrl(server, session.id));
+    ws.on("message", (d) => got.push(JSON.parse(String(d)) as ServerToClient));
+    await new Promise<void>((res, rej) => {
+      ws.on("open", () => res());
+      ws.on("error", rej);
+    });
+
+    await waitFor(() => got.some((m) => m.type === "sessions_summary"));
+    const summary = got.find(
+      (m): m is Extract<ServerToClient, { type: "sessions_summary" }> =>
+        m.type === "sessions_summary",
+    );
+    expect(summary?.sessions.map((s) => s.id)).toContain(session.id);
+    ws.close();
+  });
+
   it("renames and closes a session over HTTP", async () => {
     server = await startGovernorServer({ port: 0, dbPath: ":memory:", queryImpl });
     const created = (await (
