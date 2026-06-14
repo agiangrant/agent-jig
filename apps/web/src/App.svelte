@@ -1265,7 +1265,7 @@ function onGlobalKey(e: KeyboardEvent) {
     max-width: 1140px;
     width: 100%;
     margin: 0 auto;
-    padding: 20px 24px 64px;
+    padding: 0 24px 64px;
   }
   .reveal {
     position: fixed;
