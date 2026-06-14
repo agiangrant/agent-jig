@@ -34,8 +34,18 @@ describe("groupByIntent", () => {
       edit("c"),
     ]);
     expect(groups).toEqual([
-      { id: "a", label: "Add a rate-limit guard.", editIds: ["a", "b"] },
-      { id: "c", label: "Wire the guard into the controller.", editIds: ["c"] },
+      {
+        id: "a",
+        label: "Add a rate-limit guard.",
+        editIds: ["a", "b"],
+        reason: "Add a rate-limit guard.\nMore detail here.",
+      },
+      {
+        id: "c",
+        label: "Wire the guard into the controller.",
+        editIds: ["c"],
+        reason: "Wire the guard into the controller.",
+      },
     ]);
   });
 
@@ -46,13 +56,18 @@ describe("groupByIntent", () => {
       reasoning("Renamed the method across all files."),
     ]);
     expect(groups).toEqual([
-      { id: "a", label: "Renamed the method across all files.", editIds: ["a", "b"] },
+      {
+        id: "a",
+        label: "Renamed the method across all files.",
+        editIds: ["a", "b"],
+        reason: "Renamed the method across all files.",
+      },
     ]);
   });
 
   it("puts edits before any reasoning under 'Other changes'", () => {
     const groups = groupByIntent([edit("a"), reasoning("Now the real work."), edit("b")]);
-    expect(groups[0]).toEqual({ id: "a", label: "Other changes", editIds: ["a"] });
+    expect(groups[0]).toEqual({ id: "a", label: "Other changes", editIds: ["a"], reason: "" });
     expect(groups[1]?.label).toBe("Now the real work.");
   });
 
@@ -63,7 +78,9 @@ describe("groupByIntent", () => {
       edit("g", "Grep"),
       edit("w", "Write"),
     ]);
-    expect(groups).toEqual([{ id: "w", label: "Explore first.", editIds: ["w"] }]);
+    expect(groups).toEqual([
+      { id: "w", label: "Explore first.", editIds: ["w"], reason: "Explore first." },
+    ]);
   });
 
   it("drops reasoning that produced no edits", () => {
@@ -72,6 +89,17 @@ describe("groupByIntent", () => {
       reasoning("Actually, edit this."),
       edit("a"),
     ]);
-    expect(groups).toEqual([{ id: "a", label: "Actually, edit this.", editIds: ["a"] }]);
+    expect(groups).toEqual([
+      { id: "a", label: "Actually, edit this.", editIds: ["a"], reason: "Actually, edit this." },
+    ]);
+  });
+
+  it("condenses a rambling reasoning to a concise first-sentence label with ellipsis", () => {
+    const ramble =
+      "The setup is clear: NestJS, CommonJS, Node 24 so zlib is available for ZIP work, and Jest specs everywhere across the repo. Lots more detail.";
+    const groups = groupByIntent([reasoning(ramble), edit("a")]);
+    expect(groups[0]?.label.length).toBeLessThanOrEqual(72);
+    expect(groups[0]?.label.endsWith("…")).toBe(true);
+    expect(groups[0]?.reason).toBe(ramble); // full text preserved for summarization
   });
 });

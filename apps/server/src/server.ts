@@ -88,9 +88,15 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
 
   const store = new SqliteStorage(dbPath);
   const analyzer = await StructuralAnalyzer.create().catch(() => null);
-  const hasKey = Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN);
+  // Narration/intent-labels need an LLM: Anthropic creds, or any OpenAI-compatible
+  // endpoint (e.g. a local Ollama via GOVERNOR_LLM_BASE_URL).
+  const hasLlm = Boolean(
+    process.env.ANTHROPIC_API_KEY ||
+      process.env.ANTHROPIC_AUTH_TOKEN ||
+      process.env.GOVERNOR_LLM_BASE_URL,
+  );
   const narrationOn =
-    (opts.narrate ?? !["0", "off", "false"].includes(process.env.GOVERNOR_NARRATE ?? "")) && hasKey;
+    (opts.narrate ?? !["0", "off", "false"].includes(process.env.GOVERNOR_NARRATE ?? "")) && hasLlm;
   const narrator = narrationOn ? createNarrator() : null;
 
   const manager = new SessionManager({ store, analyzer, narrator, queryImpl: opts.queryImpl });

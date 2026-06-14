@@ -265,7 +265,7 @@ function steer() {
           {:else}
             {#each conn.changeView as g (g.id)}
               <div class="group">
-                <p class="label">{g.label}</p>
+                <p class="label" title={g.label}>{g.label}</p>
                 {#if g.pattern}
                   {@const pid = g.pattern.editIds[0] ?? ""}
                   {@const rep = editEvent(pid)}
@@ -691,6 +691,9 @@ function steer() {
     color: var(--fg);
     font-weight: 600;
     margin: 0 0 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .group .edit {
     margin-bottom: 8px;

@@ -37,8 +37,10 @@ export function buildChangeView(
   }
 
   return groupByIntent(visible).map((group) => {
+    // `reason` is server-only (feeds label summarization); keep it off the wire.
+    const base = { id: group.id, label: group.label, editIds: group.editIds };
     if (analyzer === null) {
-      return { ...group, pattern: null, outliers: [] };
+      return { ...base, pattern: null, outliers: [] };
     }
     const edits: EditForAnalysis[] = group.editIds.map((id) => {
       const p = (callByEditId.get(id)?.payload ?? {}) as EditPayload;
@@ -50,6 +52,6 @@ export function buildChangeView(
       };
     });
     const { pattern, outliers } = analyzer.analyzeGroup(edits);
-    return { ...group, pattern, outliers };
+    return { ...base, pattern, outliers };
   });
 }

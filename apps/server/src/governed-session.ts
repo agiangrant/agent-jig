@@ -1,6 +1,12 @@
 import { type RunningSession, type RunSessionDeps, runGovernedSession } from "@governor/agent-host";
-import type { ClientToServer, DialMode, GovernorEvent, Session } from "@governor/contracts";
-import { isWriteClass, Pacer } from "@governor/core";
+import type {
+  ChangeView,
+  ClientToServer,
+  DialMode,
+  GovernorEvent,
+  Session,
+} from "@governor/contracts";
+import { groupByIntent, isWriteClass, Pacer } from "@governor/core";
 import type { Narrator } from "@governor/narrator";
 import { Sidecar } from "@governor/sidecar";
 import type { Storage } from "@governor/store";
@@ -51,12 +57,17 @@ export class GovernedSession {
   private readonly broadcaster = new Broadcaster();
   private readonly running: RunningSession;
   private readonly sidecar: Sidecar;
+  private readonly narrator: Narrator | null;
+  /** Generated intent labels, keyed by group id (first edit). */
+  private readonly intentLabels = new Map<string, string>();
+  private readonly intentPending = new Set<string>();
 
   constructor(deps: GovernedSessionDeps) {
     this.id = deps.session.id;
     this.repoPath = deps.session.repoPath;
     this.store = deps.store;
     this.analyzer = deps.analyzer;
+    this.narrator = deps.narrator;
     this.pacer = new Pacer(deps.mode ?? deps.store.getConfig().defaultMode);
 
     const narrator = deps.narrator;
@@ -117,11 +128,43 @@ export class GovernedSession {
     await this.sidecar.close().catch(() => {});
   }
 
-  private changeView() {
-    return buildChangeView(this.store.listEvents(this.id), this.analyzer);
+  private changeView(): ChangeView {
+    const events = this.store.listEvents(this.id);
+    const view = buildChangeView(events, this.analyzer);
+    this.enrichIntentLabels(view, events);
+    return view;
   }
   private broadcastChangeView(): void {
     this.broadcaster.broadcast({ type: "change_view", view: this.changeView() });
+  }
+
+  /**
+   * Replace each group's heuristic label with a crisp LLM-generated intent
+   * summary when available; trigger generation (once per group) for long
+   * reasonings otherwise, re-broadcasting when each resolves. Cached by group id.
+   */
+  private enrichIntentLabels(view: ChangeView, events: GovernorEvent[]): void {
+    const narrator = this.narrator;
+    if (narrator === null) return;
+    const reasonById = new Map(groupByIntent(events).map((g) => [g.id, g.reason]));
+    for (const group of view) {
+      const cached = this.intentLabels.get(group.id);
+      if (cached) {
+        group.label = cached;
+        continue;
+      }
+      const reason = reasonById.get(group.id) ?? "";
+      // A short reasoning already makes a fine label; don't spend a call on it.
+      if (reason.trim().length < 24 || this.intentPending.has(group.id)) continue;
+      this.intentPending.add(group.id);
+      void narrator.summarize(reason).then((label) => {
+        this.intentPending.delete(group.id);
+        if (label) {
+          this.intentLabels.set(group.id, label);
+          this.broadcastChangeView();
+        }
+      });
+    }
   }
 
   /** Discard a pending edit, handing the agent a reason to revise. */
