@@ -464,7 +464,8 @@ function onGlobalKey(e: KeyboardEvent) {
       <button class="icon" title="Hide sidebar" onclick={() => (sidebarOpen = false)}>‹</button>
     </div>
     <button class="newbtn" onclick={openNew}>+ New session</button>
-    {#each orderedSessions as s (s.id)}
+    <div class="tab-list">
+      {#each orderedSessions as s (s.id)}
       <!-- svelte-ignore a11y_no_static_element_interactions -- drag is a pointer-only
            enhancement; the inner buttons handle keyboard select/close -->
       <div
@@ -507,7 +508,8 @@ function onGlobalKey(e: KeyboardEvent) {
           <button class="tab-close" title="Close session" onclick={() => closeTab(s)}>×</button>
         {/if}
       </div>
-    {/each}
+      {/each}
+    </div>
 
     <div class="nav-footer">
       <select
@@ -868,6 +870,9 @@ function onGlobalKey(e: KeyboardEvent) {
     outline: none;
   }
   .tabs {
+    position: sticky;
+    top: 0;
+    height: 100dvh;
     border-right: 1px solid var(--line);
     padding: 16px 12px;
     display: flex;
@@ -875,6 +880,14 @@ function onGlobalKey(e: KeyboardEvent) {
     gap: 6px;
     overflow: hidden;
     white-space: nowrap;
+  }
+  .tab-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
   }
   .brand {
     font-weight: 700;
@@ -1013,7 +1026,7 @@ function onGlobalKey(e: KeyboardEvent) {
   }
 
   .nav-footer {
-    margin-top: auto;
+    flex-shrink: 0;
     padding-top: 10px;
     display: flex;
     gap: 6px;
