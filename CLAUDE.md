@@ -36,6 +36,10 @@ The server is a **session manager**, not one session: `apps/server` hosts a `Ses
 
 **Persistence/reconnect.** Sessions outlive process restarts. On boot `SessionManager.restore()` rehydrates every stored session: a `running` one whose last event is within `RESUME_WINDOW_MS` (6h) and which has a captured SDK session id **resumes its agent** (`runGovernedSession({ resume })` — the SDK id is captured from the message stream's `session_id` and stored in `sessions.claude_session_id`); anything else comes back **detached** (`GovernedSession` with an inert `running` — full history/diffs replay from the store, no live agent), with interrupted `running` sessions flipped to `paused`. A `GovernedSession` thus has three modes: fresh / resume / detached. The web client persists the active session id (URL hash + localStorage) so a browser refresh reconnects to the same tab.
 
+## Theming & code views (web)
+
+Syntax highlighting is **Shiki** (`apps/web/src/lib/highlight.ts` — one lazily-created highlighter; grammars code-split into on-demand chunks). The whole UI is theme-able: `theme.svelte.ts` holds the reactive selection and maps a VSCode theme's `colors` onto the chrome CSS variables in `app.css` (`--bg/--fg/--panel/--line/--accent/--muted/--ok/--warn/--danger` + `--diff-add-bg/--diff-del-bg`), so chrome and code follow one theme. Built-in presets ship; users **import any VSCode theme JSON** (persisted to localStorage, loaded into the highlighter, selectable). Selection + custom themes persist. `Code.svelte` re-highlights when `theme.current` changes. `DiffView.svelte`: a **Write** renders the full new file highlighted; an **Edit/MultiEdit** renders a diff with a persisted mode (`diffMode.svelte.ts`) — side-by-side (default), unified, or before/after — with theme-derived add/del tints.
+
 ## Conventions
 
 - TypeScript ESM, **Node 24+**, **pnpm** workspace. Internal packages export raw `./src/index.ts`

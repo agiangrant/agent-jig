@@ -2,6 +2,23 @@
 import type { GovernorEvent, Session, SessionSummary } from "@governor/contracts";
 import DiffView from "./lib/DiffView.svelte";
 import { GovernorConnection } from "./lib/connection.svelte.ts";
+import { theme } from "./lib/theme.svelte.ts";
+
+void theme.init(); // load custom themes + apply the saved selection's chrome
+
+let showTheme = $state(false);
+let themeJson = $state("");
+let themeError = $state("");
+async function importTheme() {
+  try {
+    await theme.importTheme(themeJson);
+    showTheme = false;
+    themeJson = "";
+    themeError = "";
+  } catch (e) {
+    themeError = (e as Error).message ?? "invalid theme JSON";
+  }
+}
 
 const wsBase = import.meta.env.VITE_WS_URL ?? `ws://${location.host}`;
 const httpBase = wsBase.replace(/^ws/, "http");
@@ -332,6 +349,20 @@ function submitAnswers(question: { id: string; questions: { question: string }[]
         {/if}
       </div>
     {/each}
+
+    <div class="nav-footer">
+      <select
+        class="theme-pick"
+        title="Color theme"
+        value={theme.current}
+        onchange={(e) => theme.select(e.currentTarget.value)}
+      >
+        {#each theme.available as t (t)}<option value={t}>{t}</option>{/each}
+      </select>
+      <button class="theme-import" title="Import a VSCode theme (JSON)" onclick={() => (showTheme = true)}>
+        +
+      </button>
+    </div>
   </nav>
 
   {#if sidebarOpen}
@@ -536,7 +567,7 @@ function submitAnswers(question: { id: string; questions: { question: string }[]
   </main>
 </div>
 
-<svelte:window onkeydown={(e) => { if (showNew && e.key === "Escape") showNew = false; }} />
+<svelte:window onkeydown={(e) => { if (e.key === "Escape") { showNew = false; showTheme = false; } }} />
 
 {#if showNew}
   <div class="overlay">
@@ -577,6 +608,26 @@ function submitAnswers(question: { id: string; questions: { question: string }[]
         <button type="button" class="primary" disabled={creating} onclick={createSession}>
           {creating ? "Creating…" : "Create"}
         </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if showTheme}
+  <div class="overlay">
+    <button class="backdrop" aria-label="Close" onclick={() => (showTheme = false)}></button>
+    <div class="modal" role="dialog" aria-modal="true">
+      <h3>Import VSCode theme</h3>
+      <p class="hint">Paste a VSCode color-theme JSON. It must include a <code>"name"</code>; <code>colors</code> theme the UI and <code>tokenColors</code> theme the code.</p>
+      <textarea
+        rows="10"
+        bind:value={themeJson}
+        placeholder={'{ "name": "My Theme", "type": "dark", "colors": {…}, "tokenColors": […] }'}
+      ></textarea>
+      {#if themeError}<p class="err">{themeError}</p>{/if}
+      <div class="modal-actions">
+        <button type="button" onclick={() => (showTheme = false)}>Cancel</button>
+        <button type="button" class="primary" onclick={importTheme}>Import &amp; apply</button>
       </div>
     </div>
   </div>
@@ -761,6 +812,45 @@ function submitAnswers(question: { id: string; questions: { question: string }[]
   }
   .t-status.error {
     color: var(--danger);
+  }
+
+  .nav-footer {
+    margin-top: auto;
+    padding-top: 10px;
+    display: flex;
+    gap: 6px;
+  }
+  .theme-pick {
+    flex: 1;
+    min-width: 0;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--fg);
+    font: inherit;
+    font-size: 12px;
+    padding: 5px 6px;
+  }
+  .theme-import {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--muted);
+    cursor: pointer;
+    font: inherit;
+    padding: 0 10px;
+  }
+  .theme-import:hover {
+    color: var(--fg);
+    border-color: var(--accent);
+  }
+  .hint {
+    color: var(--muted);
+    font-size: 12px;
+    margin: 0 0 4px;
+  }
+  .hint code {
+    color: var(--fg);
   }
 
   main {
