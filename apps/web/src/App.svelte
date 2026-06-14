@@ -12,6 +12,27 @@ let sessions = $state<Session[]>([]);
 let activeId = $state<string | null>(null);
 let sidebarOpen = $state(true);
 
+// --- Resizable sidebar ---
+const MIN_W = 180;
+const MAX_W = 520;
+let sidebarWidth = $state(240);
+let dragging = $state(false);
+function startDrag(e: PointerEvent) {
+  dragging = true;
+  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+}
+function onDrag(e: PointerEvent) {
+  if (!dragging) return;
+  sidebarWidth = Math.min(MAX_W, Math.max(MIN_W, e.clientX));
+}
+function endDrag() {
+  dragging = false;
+}
+function onResizeKey(e: KeyboardEvent) {
+  if (e.key === "ArrowLeft") sidebarWidth = Math.max(MIN_W, sidebarWidth - 16);
+  else if (e.key === "ArrowRight") sidebarWidth = Math.min(MAX_W, sidebarWidth + 16);
+}
+
 async function loadSessions() {
   try {
     sessions = (await (await fetch(`${httpBase}/sessions`)).json()) as Session[];
@@ -142,7 +163,11 @@ function steer() {
 }
 </script>
 
-<div class="shell" class:collapsed={!sidebarOpen}>
+<div
+  class="shell"
+  class:dragging
+  style="grid-template-columns: {sidebarOpen ? sidebarWidth : 0}px minmax(0, 1fr)"
+>
   <nav class="tabs">
     <div class="brand">
       <span>Governor</span>
@@ -157,6 +182,19 @@ function steer() {
       </button>
     {/each}
   </nav>
+
+  {#if sidebarOpen}
+    <button
+      type="button"
+      class="resizer"
+      style="left: {sidebarWidth}px"
+      aria-label="Resize sidebar"
+      onpointerdown={startDrag}
+      onpointermove={onDrag}
+      onpointerup={endDrag}
+      onkeydown={onResizeKey}
+    ></button>
+  {/if}
 
   <main>
     {#if !sidebarOpen}
@@ -351,13 +389,46 @@ function steer() {
 
 <style>
   .shell {
+    position: relative;
     display: grid;
-    grid-template-columns: 240px minmax(0, 1fr);
     min-height: 100vh;
     transition: grid-template-columns 0.2s ease;
   }
-  .shell.collapsed {
-    grid-template-columns: 0 minmax(0, 1fr);
+  .shell.dragging {
+    transition: none;
+    user-select: none;
+    cursor: col-resize;
+  }
+  .resizer {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 9px;
+    transform: translateX(-50%);
+    cursor: col-resize;
+    z-index: 5;
+    background: transparent;
+    border: 0;
+    padding: 0;
+  }
+  .resizer::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    background: var(--line);
+    transform: translateX(-50%);
+    transition: background 0.15s, width 0.15s;
+  }
+  .resizer:hover::after,
+  .resizer:focus-visible::after {
+    background: var(--accent);
+    width: 3px;
+  }
+  .resizer:focus {
+    outline: none;
   }
   .tabs {
     border-right: 1px solid var(--line);
@@ -451,9 +522,10 @@ function steer() {
     padding: 20px 24px 64px;
   }
   .reveal {
-    position: absolute;
+    position: fixed;
     top: 16px;
     left: 12px;
+    z-index: 10;
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: 6px;
