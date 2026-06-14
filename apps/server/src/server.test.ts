@@ -86,18 +86,27 @@ describe("startGovernorServer", () => {
     expect(list.length).toBe(1);
   });
 
-  it("lists subdirectories for the directory picker, marking git repos", async () => {
-    server = await startGovernorServer({ port: 0, dbPath: ":memory:", queryImpl });
-    const data = (await (
-      await fetch(`${server.url}/fs?path=${encodeURIComponent(tmpdir())}`)
-    ).json()) as {
-      path: string;
-      parent: string | null;
-      entries: { name: string; isRepo: boolean }[];
-    };
-    expect(data.path).toBe(tmpdir());
-    expect(Array.isArray(data.entries)).toBe(true);
-    expect(data.entries.every((e) => !e.name.startsWith("."))).toBe(true);
+  it("returns the picked folder from the native chooser", async () => {
+    server = await startGovernorServer({
+      port: 0,
+      dbPath: ":memory:",
+      queryImpl,
+      pickFolder: async () => "/Users/me/project",
+    });
+    const res = await fetch(`${server.url}/pick-folder`);
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { path: string }).toEqual({ path: "/Users/me/project" });
+  });
+
+  it("returns 400 when the folder pick is cancelled", async () => {
+    server = await startGovernorServer({
+      port: 0,
+      dbPath: ":memory:",
+      queryImpl,
+      pickFolder: async () => null,
+    });
+    const res = await fetch(`${server.url}/pick-folder`);
+    expect(res.status).toBe(400);
   });
 
   it("rejects a cross-origin POST /sessions (CSRF→RCE guard)", async () => {

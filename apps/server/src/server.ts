@@ -1,8 +1,10 @@
-import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { mkdirSync } from "node:fs";
 import type { Server } from "node:http";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import type { RunSessionDeps } from "@governor/agent-host";
 import { ClientToServer, type DialMode, type Session } from "@governor/contracts";
 import { createNarrator } from "@governor/narrator";
@@ -16,6 +18,27 @@ import { serveWeb } from "./static.ts";
 
 const DEFAULT_PORT = 4318;
 
+const execFileAsync = promisify(execFile);
+
+/**
+ * Pop the OS folder chooser and return the picked absolute path (null if
+ * cancelled / unavailable). A browser can't hand us a real filesystem path, but
+ * the server runs on the same machine — so we drive the native dialog here.
+ * macOS only for now; elsewhere the UI falls back to typing/pasting a path.
+ */
+async function nativePickFolder(): Promise<string | null> {
+  if (process.platform !== "darwin") return null;
+  try {
+    const { stdout } = await execFileAsync("osascript", [
+      "-e",
+      'POSIX path of (choose folder with prompt "Select a repository")',
+    ]);
+    return stdout.trim() || null;
+  } catch {
+    return null; // user cancelled, or no GUI session
+  }
+}
+
 export interface ServerOptions {
   port?: number;
   /** SQLite path. Defaults to `~/.governor/governor.db`; `:memory:` for ephemeral. */
@@ -26,6 +49,8 @@ export interface ServerOptions {
   narrate?: boolean;
   /** Injectable SDK `query` for tests; used for every session. */
   queryImpl?: RunSessionDeps["queryImpl"];
+  /** Injectable native folder picker (tests stub it). Returns an abs path or null. */
+  pickFolder?: () => Promise<string | null>;
   /** Optionally create one session at boot (the `governor run` single-shot path). */
   repoPath?: string;
   prompt?: string;
@@ -91,22 +116,13 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
   });
   app.get("/healthz", (c) => c.json({ ok: true }));
 
-  // Server-side directory picker for the New Session modal: the browser can't
-  // hand us an absolute path, but the server runs on the same machine. Lists
-  // subdirectories of `path` (defaults to home), marking those that are git repos.
-  app.get("/fs", (c) => {
-    const q = c.req.query("path");
-    const path = q ? resolve(q) : homedir();
-    try {
-      const entries = readdirSync(path, { withFileTypes: true })
-        .filter((d) => d.isDirectory() && !d.name.startsWith("."))
-        .map((d) => ({ name: d.name, isRepo: existsSync(join(path, d.name, ".git")) }))
-        .sort((a, b) => a.name.localeCompare(b.name));
-      const parent = dirname(path);
-      return c.json({ path, parent: parent === path ? null : parent, entries });
-    } catch {
-      return c.json({ error: "cannot read directory" }, 400);
-    }
+  // Native folder picker for the New Session modal: pops the OS dialog on the
+  // server (same machine as the browser) and returns the chosen absolute path.
+  const pickFolder = opts.pickFolder ?? nativePickFolder;
+  app.get("/pick-folder", async (c) => {
+    const path = await pickFolder();
+    if (!path) return c.json({ error: "no folder selected" }, 400);
+    return c.json({ path });
   });
 
   app.get("/sessions", (c) => c.json(manager.list()));

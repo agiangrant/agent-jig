@@ -49,7 +49,7 @@ function select(id: string) {
 void loadSessions();
 setInterval(loadSessions, 3000);
 
-// --- New session modal + directory picker ---
+// --- New session modal ---
 let showNew = $state(false);
 let newRepo = $state("");
 let newTask = $state("");
@@ -57,35 +57,41 @@ let newWorktree = $state(false);
 let creating = $state(false);
 let createError = $state("");
 
-let browseOpen = $state(false);
-let browsePath = $state("");
-let browseParent = $state<string | null>(null);
-let browseEntries = $state<{ name: string; isRepo: boolean }[]>([]);
+// Recently-chosen repo folders, for quick re-selection (persisted locally).
+const RECENT_KEY = "governor:recentFolders";
+function loadRecent(): string[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]");
+    return Array.isArray(v) ? (v as string[]) : [];
+  } catch {
+    return [];
+  }
+}
+let recentFolders = $state<string[]>(loadRecent());
+function rememberFolder(path: string) {
+  recentFolders = [path, ...recentFolders.filter((p) => p !== path)].slice(0, 8);
+  try {
+    localStorage.setItem(RECENT_KEY, JSON.stringify(recentFolders));
+  } catch {
+    /* storage may be unavailable */
+  }
+}
 
 function openNew() {
   newRepo = "";
   newTask = "";
   newWorktree = false;
   createError = "";
-  browseOpen = false;
   showNew = true;
-  void browse(null);
 }
-async function browse(path: string | null) {
+async function pickFolder() {
   try {
-    const url = path ? `${httpBase}/fs?path=${encodeURIComponent(path)}` : `${httpBase}/fs`;
-    const data = (await (await fetch(url)).json()) as {
-      path: string;
-      parent: string | null;
-      entries: { name: string; isRepo: boolean }[];
-      error?: string;
-    };
-    if (data.error) return;
-    browsePath = data.path;
-    browseParent = data.parent;
-    browseEntries = data.entries;
+    const res = await fetch(`${httpBase}/pick-folder`);
+    if (!res.ok) return;
+    const data = (await res.json()) as { path?: string };
+    if (data.path) newRepo = data.path;
   } catch {
-    /* ignore unreadable dir */
+    /* picker unavailable — fall back to typing a path */
   }
 }
 async function createSession() {
@@ -111,6 +117,7 @@ async function createSession() {
       return;
     }
     const s = (await res.json()) as Session;
+    rememberFolder(newRepo.trim());
     showNew = false;
     await loadSessions();
     select(s.id);
@@ -340,31 +347,20 @@ function steer() {
 
       <label for="repo">Repository</label>
       <div class="repo-field">
-        <input id="repo" readonly value={newRepo} placeholder="Choose a folder…" />
-        <button type="button" onclick={() => (browseOpen = !browseOpen)}>
-          {browseOpen ? "Close" : "Browse…"}
-        </button>
+        <input id="repo" bind:value={newRepo} placeholder="/path/to/repo" />
+        <button type="button" onclick={pickFolder}>Choose folder…</button>
       </div>
-
-      {#if browseOpen}
-        <div class="browser">
-          <div class="browser-path">{browsePath}</div>
-          <ul>
-            {#if browseParent}
-              <li><button type="button" class="dir up" onclick={() => browse(browseParent)}>↑ ..</button></li>
-            {/if}
-            {#each browseEntries as e (e.name)}
-              <li>
-                <button type="button" class="dir" onclick={() => browse(`${browsePath}/${e.name}`)}>
-                  📁 {e.name}{#if e.isRepo}<span class="repo-badge">git</span>{/if}
-                </button>
-              </li>
-            {/each}
-          </ul>
-          <button type="button" class="use" onclick={() => { newRepo = browsePath; browseOpen = false; }}>
-            Use this folder
-          </button>
-        </div>
+      {#if recentFolders.length}
+        <select
+          class="recent"
+          onchange={(e) => {
+            if (e.currentTarget.value) newRepo = e.currentTarget.value;
+            e.currentTarget.selectedIndex = 0;
+          }}
+        >
+          <option value="">Recent folders…</option>
+          {#each recentFolders as f (f)}<option value={f}>{f}</option>{/each}
+        </select>
       {/if}
 
       <label for="task">Task</label>
@@ -898,8 +894,7 @@ function steer() {
     font: inherit;
     min-width: 0;
   }
-  .repo-field button,
-  .browser .use {
+  .repo-field button {
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: 8px;
@@ -907,59 +902,16 @@ function steer() {
     color: var(--fg);
     cursor: pointer;
     font: inherit;
-  }
-  .browser {
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .browser-path {
-    font-size: 11px;
-    color: var(--muted);
-    font-family: ui-monospace, monospace;
-    overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .browser ul {
-    max-height: 220px;
-    overflow-y: auto;
-  }
-  .browser .dir {
-    width: 100%;
-    text-align: left;
-    background: transparent;
-    border: 0;
-    border-radius: 6px;
-    padding: 5px 8px;
-    color: var(--fg);
-    cursor: pointer;
-    font: inherit;
-    font-size: 13px;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .browser .dir:hover {
+  .recent {
     background: var(--panel);
-  }
-  .browser .dir.up {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 7px 10px;
     color: var(--muted);
-  }
-  .repo-badge {
-    font-size: 10px;
-    text-transform: uppercase;
-    color: var(--accent);
-    border: 1px solid var(--accent);
-    border-radius: 4px;
-    padding: 0 5px;
-  }
-  .browser .use {
-    align-self: flex-start;
-    font-weight: 600;
+    font: inherit;
+    font-size: 12px;
   }
   .modal textarea {
     background: var(--panel);
