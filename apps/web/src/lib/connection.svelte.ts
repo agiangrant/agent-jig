@@ -21,7 +21,17 @@ export class GovernorConnection {
 
   #ws: WebSocket | null = null;
 
+  /** (Re)connect to a session's stream, resetting state so tabs switch cleanly. */
   connect(url: string): void {
+    this.#ws?.close();
+    this.session = null;
+    this.mode = "slowed";
+    this.queue = [];
+    this.events = [];
+    this.changeView = [];
+    this.conversation = [];
+    this.connected = false;
+
     const ws = new WebSocket(url);
     this.#ws = ws;
     ws.onopen = () => {

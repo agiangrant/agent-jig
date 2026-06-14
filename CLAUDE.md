@@ -25,6 +25,10 @@ and the steering channel are all *views over that log*. Don't invent parallel st
 - Every tool call is observable on the async message iterator (`assistant` messages carry
   `tool_use` blocks) — that is the event source.
 
+## Multi-session
+
+The server is a **session manager**, not one session: `apps/server` hosts a `SessionManager` of `GovernedSession` bundles (each its own pacer/agent-host/sidecar/worktree/broadcaster), over one shared store/analyzer/narrator. `POST /sessions` creates, `GET /sessions` lists. Websockets are **scoped per connection** by `ws://…?session=<id>` (message shapes stay unchanged — no sessionId field). `governor run` starts a persistent server (or attaches a session to a running one via HTTP); the UI has vertical session tabs + a "New session" form and polls `GET /sessions`. The server stays up across sessions (Ctrl-C to stop).
+
 ## Conventions
 
 - TypeScript ESM, **Node 24+**, **pnpm** workspace. Internal packages export raw `./src/index.ts`

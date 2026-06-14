@@ -26,32 +26,28 @@ const waitFor = async (pred: () => boolean, ms = 1000): Promise<void> => {
   }
 };
 
-let server: RunningServer;
+const wsUrl = (server: RunningServer, id: string) =>
+  `${server.url.replace("http", "ws")}?session=${id}`;
 
+let server: RunningServer;
 afterEach(async () => {
   await server.close();
 });
 
 describe("startGovernorServer", () => {
-  it("snapshots state to a new client and round-trips a dial change", async () => {
-    server = await startGovernorServer({
-      repoPath: tmpdir(),
-      prompt: "t",
-      port: 0,
-      dbPath: ":memory:",
-      mode: "slowed",
-      queryImpl,
-    });
+  it("snapshots a session to a new client and round-trips a dial change", async () => {
+    server = await startGovernorServer({ port: 0, dbPath: ":memory:", queryImpl });
+    const session = server.createSession({ repoPath: tmpdir(), prompt: "t", mode: "slowed" });
 
     const got: ServerToClient[] = [];
-    const ws = new WebSocket(server.url.replace("http", "ws"));
+    const ws = new WebSocket(wsUrl(server, session.id));
     ws.on("message", (d) => got.push(JSON.parse(String(d)) as ServerToClient));
     await new Promise<void>((res, rej) => {
       ws.on("open", () => res());
       ws.on("error", rej);
     });
 
-    await waitFor(() => got.some((m) => m.type === "queue_state"));
+    await waitFor(() => got.some((m) => m.type === "change_view"));
     const types = got.map((m) => m.type);
     expect(types).toContain("session_state");
     expect(types).toContain("dial_state");
@@ -59,29 +55,34 @@ describe("startGovernorServer", () => {
 
     ws.send(JSON.stringify({ type: "set_dial", mode: "realtime" }));
     await waitFor(() => got.some((m) => m.type === "dial_state" && m.mode === "realtime"));
-
     ws.close();
   });
 
-  it("rejects a websocket handshake from a foreign origin (CSWSH guard)", async () => {
-    server = await startGovernorServer({
-      repoPath: tmpdir(),
-      prompt: "t",
-      port: 0,
-      dbPath: ":memory:",
-      queryImpl,
-    });
-
-    const ws = new WebSocket(server.url.replace("http", "ws"), {
-      origin: "http://evil.example",
-    });
+  it("rejects a websocket from a foreign origin (CSWSH guard)", async () => {
+    server = await startGovernorServer({ port: 0, dbPath: ":memory:", queryImpl });
+    const session = server.createSession({ repoPath: tmpdir(), prompt: "t" });
+    const ws = new WebSocket(wsUrl(server, session.id), { origin: "http://evil.example" });
     const outcome = await new Promise<"open" | "rejected">((res) => {
       ws.on("open", () => res("open"));
       ws.on("error", () => res("rejected"));
       ws.on("unexpected-response", () => res("rejected"));
     });
-
     expect(outcome).toBe("rejected");
     ws.close();
+  });
+
+  it("creates and lists sessions over HTTP", async () => {
+    server = await startGovernorServer({ port: 0, dbPath: ":memory:", queryImpl });
+    const res = await fetch(`${server.url}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ repoPath: tmpdir(), prompt: "via http" }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string; taskPrompt: string };
+    expect(created.taskPrompt).toBe("via http");
+
+    const list = (await (await fetch(`${server.url}/sessions`)).json()) as unknown[];
+    expect(list.length).toBe(1);
   });
 });

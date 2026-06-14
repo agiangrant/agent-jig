@@ -6,5 +6,5 @@ const prompt = process.env.GOVERNOR_TASK ?? "Explore this repository and summari
 
 const server = await startGovernorServer({ repoPath, prompt });
 console.log(`Governor dev server: ${server.url}`);
-await server.done;
-await server.close();
+process.on("SIGINT", () => void server.close().then(() => process.exit(0)));
+await new Promise(() => {}); // stay up for more sessions until Ctrl-C

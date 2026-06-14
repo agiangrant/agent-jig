@@ -49,22 +49,44 @@ if (!cli.prompt) {
 }
 
 const repoPath = cli.repo ?? process.cwd();
+const mode = parseMode(cli.mode);
+const port = cli.port ? Number(cli.port) : 4318;
+const base = `http://localhost:${port}`;
+
+// If a Governor server is already up, attach a session to it; otherwise start one.
+let alreadyRunning = false;
+try {
+  alreadyRunning = (await fetch(`${base}/healthz`)).ok;
+} catch {
+  alreadyRunning = false;
+}
+
+if (alreadyRunning) {
+  const res = await fetch(`${base}/sessions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ repoPath, prompt: cli.prompt, mode }),
+  });
+  if (!res.ok) {
+    console.error(`Failed to add session: ${await res.text()}`);
+    process.exit(1);
+  }
+  console.log(`\n  Added a session to the Governor running at ${base}\n`);
+  openBrowser(base);
+  process.exit(0);
+}
+
 const server = await startGovernorServer({
   repoPath,
   prompt: cli.prompt,
-  mode: parseMode(cli.mode),
+  mode,
   port: cli.port ? Number(cli.port) : undefined,
   dbPath: cli.db,
 });
-
 console.log("\n  Governor is supervising the agent.");
 console.log(`  Repo:  ${repoPath}`);
-console.log(`  Open:  ${server.url}\n`);
+console.log(`  Open:  ${server.url}`);
+console.log("  (stays up — add more sessions from the UI or another `governor run`)\n");
 openBrowser(server.url);
-
-try {
-  await server.done;
-  console.log("\n  Session complete.");
-} finally {
-  await server.close();
-}
+process.on("SIGINT", () => void server.close().then(() => process.exit(0)));
+await new Promise(() => {}); // foreground until Ctrl-C

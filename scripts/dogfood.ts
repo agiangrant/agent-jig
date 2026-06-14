@@ -13,27 +13,27 @@ const ACK_DELAY_MS = Number(process.env.ACK_DELAY_MS ?? 800);
 const t0 = Date.now();
 const ts = () => `+${((Date.now() - t0) / 1000).toFixed(1)}s`;
 
-const server = await startGovernorServer({
-  repoPath: repo,
-  prompt: task,
-  mode: "slowed",
-  port: 0,
-  dbPath: ":memory:",
-});
-console.log(`${ts()} server up at ${server.url} (mode: slowed)`);
+const server = await startGovernorServer({ port: 0, dbPath: ":memory:" });
+const session = server.createSession({ repoPath: repo, prompt: task, mode: "slowed" });
+console.log(`${ts()} server up at ${server.url} — session ${session.id} (mode: slowed)`);
 
 const STEER = process.env.GOVERNOR_STEER; // inject this directive once, after the first edit
 const scheduled = new Set<string>();
 let steered = false;
 const events: GovernorEvent[] = [];
 let changeView: ChangeView = [];
-const ws = new WebSocket(server.url.replace("http", "ws"));
+let resolveDone: () => void = () => {};
+const done = new Promise<void>((r) => {
+  resolveDone = r;
+});
+const ws = new WebSocket(`${server.url.replace("http", "ws")}?session=${session.id}`);
 
 ws.on("message", (raw) => {
   const msg = JSON.parse(String(raw));
   if (msg.type === "event") {
     const e = msg.event as GovernorEvent;
     events.push(e);
+    if (e.type === "session_end") resolveDone();
     if (e.type === "reasoning") {
       console.log(`${ts()} #${e.seq} 💭 ${(e.payload as { text?: string })?.text ?? ""}`);
     } else if (e.type === "narration") {
@@ -71,7 +71,7 @@ ws.on("message", (raw) => {
   }
 });
 
-await server.done;
+await done;
 // Narration is async (a Haiku call per edit); give trailing ones a moment to land.
 await new Promise((r) => setTimeout(r, 4000));
 console.log(`${ts()} session done`);

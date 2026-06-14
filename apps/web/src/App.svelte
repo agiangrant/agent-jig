@@ -1,12 +1,51 @@
 <script lang="ts">
-import type { GovernorEvent } from "@governor/contracts";
+import type { GovernorEvent, Session } from "@governor/contracts";
 import DiffView from "./lib/DiffView.svelte";
 import { GovernorConnection } from "./lib/connection.svelte.ts";
 
+const wsBase = import.meta.env.VITE_WS_URL ?? `ws://${location.host}`;
+const httpBase = wsBase.replace(/^ws/, "http");
+
 const conn = new GovernorConnection();
-// Same-origin when served by the governor server (any --port); dev sets VITE_WS_URL.
-const wsUrl = import.meta.env.VITE_WS_URL ?? `ws://${location.host}`;
-conn.connect(wsUrl);
+
+let sessions = $state<Session[]>([]);
+let activeId = $state<string | null>(null);
+
+async function loadSessions() {
+  try {
+    sessions = (await (await fetch(`${httpBase}/sessions`)).json()) as Session[];
+    if (activeId === null && sessions[0]) select(sessions[0].id);
+  } catch {
+    /* server may be momentarily unavailable */
+  }
+}
+function select(id: string) {
+  if (id === activeId) return;
+  activeId = id;
+  conn.connect(`${wsBase}?session=${id}`);
+}
+void loadSessions();
+setInterval(loadSessions, 3000);
+
+let newRepo = $state("");
+let newTask = $state("");
+async function createSession() {
+  if (!newRepo.trim() || !newTask.trim()) return;
+  const res = await fetch(`${httpBase}/sessions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ repoPath: newRepo.trim(), prompt: newTask.trim() }),
+  });
+  if (!res.ok) return;
+  const s = (await res.json()) as Session;
+  newRepo = "";
+  newTask = "";
+  await loadSessions();
+  select(s.id);
+}
+function repoName(path: string): string {
+  return path.split("/").filter(Boolean).pop() ?? path;
+}
 
 const toggle = () => conn.setDial(conn.mode === "slowed" ? "realtime" : "slowed");
 
@@ -36,10 +75,8 @@ function text(p: unknown): string {
   return ((p ?? {}) as { text?: string }).text ?? "";
 }
 
-// One compose box, two destinations: Ask (sidecar) and Send→agent (directive).
 let message = $state("");
-let anchor = $state(""); // optional editId to attach a "re:" reference
-
+let anchor = $state("");
 function ask() {
   const t = message.trim();
   if (!t) return;
@@ -54,166 +91,263 @@ function steer() {
 }
 </script>
 
-<main>
-  <header>
-    <div class="title">
-      <h1>Governor</h1>
-      <span class="conn" class:on={conn.connected}>{conn.connected ? "live" : "offline"}</span>
-    </div>
-    <button class="dial" class:slowed={conn.mode === "slowed"} onclick={toggle}>
-      {conn.mode === "slowed" ? "◐ Slowed" : "● Real-time"}
-    </button>
-  </header>
+<div class="shell">
+  <nav class="tabs">
+    <div class="brand">Governor</div>
+    {#each sessions as s (s.id)}
+      <button class="tab" class:active={s.id === activeId} onclick={() => select(s.id)}>
+        <span class="t-repo">{repoName(s.repoPath)}</span>
+        <span class="t-task">{s.taskPrompt}</span>
+        <span class="t-status {s.status}">{s.status}</span>
+      </button>
+    {/each}
+    <form class="new" onsubmit={(e) => { e.preventDefault(); createSession(); }}>
+      <input bind:value={newRepo} placeholder="repo path" />
+      <input bind:value={newTask} placeholder="task" />
+      <button type="submit">+ New session</button>
+    </form>
+  </nav>
 
-  {#if conn.session}
-    <p class="task">{conn.session.taskPrompt}</p>
-  {/if}
+  <main>
+    {#if activeId === null}
+      <p class="empty big">No session selected. Create one to start supervising.</p>
+    {:else}
+      <header>
+        <span class="conn" class:on={conn.connected}>{conn.connected ? "live" : "offline"}</span>
+        <button class="dial" class:slowed={conn.mode === "slowed"} onclick={toggle}>
+          {conn.mode === "slowed" ? "◐ Slowed" : "● Real-time"}
+        </button>
+      </header>
 
-  <div class="cols">
-    <section class="left">
-      <h2>Queue <span class="count">{conn.queue.length}</span></h2>
-      {#if conn.queue.length === 0}
-        <p class="empty">Nothing waiting — the agent is working, or idle.</p>
-      {:else}
-        <ul>
-          {#each conn.queue as edit (edit.editId)}
-            <li>
-              <div class="row">
-                <span class="risk {riskLabel(edit.risk)}">{riskLabel(edit.risk)}</span>
-                <code>{edit.path}</code>
-                <span class="tool">{edit.toolName}</span>
-                <button onclick={() => conn.ack(edit.editId)}>Ack</button>
-              </div>
-              <DiffView toolName={edit.toolName} payload={editEvent(edit.editId)?.payload} />
-            </li>
-          {/each}
-        </ul>
+      {#if conn.session}
+        <p class="task">{conn.session.taskPrompt}</p>
       {/if}
 
-      <h2>Changes by intent</h2>
-      {#if conn.changeView.length === 0}
-        <p class="empty">No edits yet.</p>
-      {:else}
-        {#each conn.changeView as g (g.id)}
-          <div class="group">
-            <p class="label">{g.label}</p>
-            {#if g.pattern}
-              {@const rep = editEvent(g.pattern.editIds[0] ?? "")}
-              <div class="edit collapsed">
-                <span class="badge">⊟ {g.pattern.count} structurally identical edits</span>
-                <code>{filePath(rep?.payload)} + {g.pattern.count - 1} more</code>
-                {#if narrationFor(g.pattern.editIds[0] ?? "")}
-                  <p class="why-line">💬 {narrationFor(g.pattern.editIds[0] ?? "")}</p>
+      <div class="cols">
+        <section class="left">
+          <h2>Queue <span class="count">{conn.queue.length}</span></h2>
+          {#if conn.queue.length === 0}
+            <p class="empty">Nothing waiting — the agent is working, or idle.</p>
+          {:else}
+            <ul>
+              {#each conn.queue as edit (edit.editId)}
+                <li>
+                  <div class="row">
+                    <span class="risk {riskLabel(edit.risk)}">{riskLabel(edit.risk)}</span>
+                    <code>{edit.path}</code>
+                    <span class="tool">{edit.toolName}</span>
+                    <button onclick={() => conn.ack(edit.editId)}>Ack</button>
+                  </div>
+                  <DiffView toolName={edit.toolName} payload={editEvent(edit.editId)?.payload} />
+                </li>
+              {/each}
+            </ul>
+          {/if}
+
+          <h2>Changes by intent</h2>
+          {#if conn.changeView.length === 0}
+            <p class="empty">No edits yet.</p>
+          {:else}
+            {#each conn.changeView as g (g.id)}
+              <div class="group">
+                <p class="label">{g.label}</p>
+                {#if g.pattern}
+                  {@const rep = editEvent(g.pattern.editIds[0] ?? "")}
+                  <div class="edit collapsed">
+                    <span class="badge">⊟ {g.pattern.count} structurally identical edits</span>
+                    <code>{filePath(rep?.payload)} + {g.pattern.count - 1} more</code>
+                    {#if narrationFor(g.pattern.editIds[0] ?? "")}
+                      <p class="why-line">💬 {narrationFor(g.pattern.editIds[0] ?? "")}</p>
+                    {/if}
+                    <DiffView toolName={rep?.toolName ?? ""} payload={rep?.payload} />
+                  </div>
+                  {#each g.outliers as id (id)}
+                    {@const e = editEvent(id)}
+                    <div class="edit outlier">
+                      <span class="badge warn">⚠ differs from the pattern — worth a look</span>
+                      <code>{filePath(e?.payload)}</code>
+                      {#if narrationFor(id)}<p class="why-line">💬 {narrationFor(id)}</p>{/if}
+                      <DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />
+                    </div>
+                  {/each}
+                {:else}
+                  {#each g.editIds as id (id)}
+                    {@const e = editEvent(id)}
+                    <div class="edit">
+                      <code>{filePath(e?.payload)}</code>
+                      {#if narrationFor(id)}<p class="why-line">💬 {narrationFor(id)}</p>{/if}
+                      <DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />
+                    </div>
+                  {/each}
                 {/if}
-                <DiffView toolName={rep?.toolName ?? ""} payload={rep?.payload} />
               </div>
-              {#each g.outliers as id (id)}
-                {@const e = editEvent(id)}
-                <div class="edit outlier">
-                  <span class="badge warn">⚠ differs from the pattern — worth a look</span>
-                  <code>{filePath(e?.payload)}</code>
-                  {#if narrationFor(id)}<p class="why-line">💬 {narrationFor(id)}</p>{/if}
-                  <DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />
-                </div>
-              {/each}
-            {:else}
-              {#each g.editIds as id (id)}
-                {@const e = editEvent(id)}
-                <div class="edit">
-                  <code>{filePath(e?.payload)}</code>
-                  {#if narrationFor(id)}<p class="why-line">💬 {narrationFor(id)}</p>{/if}
-                  <DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />
-                </div>
-              {/each}
-            {/if}
-          </div>
-        {/each}
-      {/if}
+            {/each}
+          {/if}
 
-      <details class="history">
-        <summary>History · {conn.events.length} events</summary>
-        <ol>
-          {#each conn.events as ev (ev.id)}
-            {#if ev.type === "out_of_band_change"}
-              <li class="oob">
-                <span class="seq">#{ev.seq}</span>
-                <span class="warn">⚠ changed outside the agent ({outOfBand(ev.payload).attributedTo})</span>
-                <span class="files">{outOfBand(ev.payload).files.map((f) => f.path).join(", ")}</span>
-              </li>
-            {:else if ev.type === "reasoning"}
-              <li class="reason"><span class="seq">#{ev.seq}</span><span class="why">{text(ev.payload)}</span></li>
-            {:else if ev.type === "directive"}
-              <li class="directive"><span class="seq">#{ev.seq}</span><span class="arrow">→ steer</span><span class="dtext">{text(ev.payload)}</span></li>
-            {:else}
-              <li>
-                <span class="seq">#{ev.seq}</span>
-                <span class="etype">{ev.type}</span>
-                {#if ev.toolName}<span class="tool">{ev.toolName}</span>{/if}
-                {#if ev.gateState}<span class="gate {ev.gateState}">{ev.gateState}</span>{/if}
-              </li>
-            {/if}
-          {/each}
-        </ol>
-      </details>
-    </section>
+          <details class="history">
+            <summary>History · {conn.events.length} events</summary>
+            <ol>
+              {#each conn.events as ev (ev.id)}
+                {#if ev.type === "out_of_band_change"}
+                  <li class="oob">
+                    <span class="seq">#{ev.seq}</span>
+                    <span class="warn">⚠ changed outside the agent ({outOfBand(ev.payload).attributedTo})</span>
+                    <span class="files">{outOfBand(ev.payload).files.map((f) => f.path).join(", ")}</span>
+                  </li>
+                {:else if ev.type === "reasoning"}
+                  <li class="reason"><span class="seq">#{ev.seq}</span><span class="why">{text(ev.payload)}</span></li>
+                {:else if ev.type === "directive"}
+                  <li class="directive"><span class="seq">#{ev.seq}</span><span class="arrow">→ steer</span><span class="dtext">{text(ev.payload)}</span></li>
+                {:else}
+                  <li>
+                    <span class="seq">#{ev.seq}</span>
+                    <span class="etype">{ev.type}</span>
+                    {#if ev.toolName}<span class="tool">{ev.toolName}</span>{/if}
+                    {#if ev.gateState}<span class="gate {ev.gateState}">{ev.gateState}</span>{/if}
+                  </li>
+                {/if}
+              {/each}
+            </ol>
+          </details>
+        </section>
 
-    <aside class="right">
-      <h2>Conversation</h2>
-      <div class="chat">
-        {#if conn.conversation.length === 0}
-          <p class="empty">Ask about provenance, or steer the agent.</p>
-        {/if}
-        {#each conn.conversation as m, i (i)}
-          <div class="msg {m.role}">
-            {#if m.role === "sidecar"}<span class="tag">sidecar</span>{/if}
-            {#if m.role === "steer"}<span class="tag steer">→ sent to agent</span>{/if}
-            {m.text}
+        <aside class="right">
+          <h2>Conversation</h2>
+          <div class="chat">
+            {#if conn.conversation.length === 0}
+              <p class="empty">Ask about provenance, or steer the agent.</p>
+            {/if}
+            {#each conn.conversation as m, i (i)}
+              <div class="msg {m.role}">
+                {#if m.role === "sidecar"}<span class="tag">sidecar</span>{/if}
+                {#if m.role === "steer"}<span class="tag steer">→ sent to agent</span>{/if}
+                {m.text}
+              </div>
+            {/each}
           </div>
-        {/each}
+          <form class="compose" onsubmit={(e) => { e.preventDefault(); steer(); }}>
+            <input type="text" bind:value={message} placeholder="Ask about provenance, or steer the agent…" />
+            <div class="actions">
+              <select bind:value={anchor} title="Attach a reference to a pending edit">
+                <option value="">re: (none)</option>
+                {#each conn.queue as e (e.editId)}<option value={e.editId}>re: {e.path}</option>{/each}
+              </select>
+              <button type="button" class="ask" onclick={ask}>Ask</button>
+              <button type="submit" class="send">Send → agent</button>
+            </div>
+          </form>
+        </aside>
       </div>
-      <form
-        class="compose"
-        onsubmit={(e) => {
-          e.preventDefault();
-          steer();
-        }}
-      >
-        <input type="text" bind:value={message} placeholder="Ask about provenance, or steer the agent…" />
-        <div class="actions">
-          <select bind:value={anchor} title="Attach a reference to a pending edit">
-            <option value="">re: (none)</option>
-            {#each conn.queue as e (e.editId)}<option value={e.editId}>re: {e.path}</option>{/each}
-          </select>
-          <button type="button" class="ask" onclick={ask}>Ask</button>
-          <button type="submit" class="send">Send → agent</button>
-        </div>
-      </form>
-    </aside>
-  </div>
-</main>
+    {/if}
+  </main>
+</div>
 
 <style>
+  .shell {
+    display: grid;
+    grid-template-columns: 230px minmax(0, 1fr);
+    min-height: 100vh;
+  }
+  .tabs {
+    border-right: 1px solid var(--line);
+    padding: 16px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .brand {
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    padding: 4px 8px 12px;
+  }
+  .tab {
+    text-align: left;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    padding: 8px 10px;
+    cursor: pointer;
+    color: var(--fg);
+    font: inherit;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .tab:hover {
+    background: var(--panel);
+  }
+  .tab.active {
+    background: var(--panel);
+    border-color: var(--accent);
+  }
+  .t-repo {
+    font-weight: 600;
+    font-size: 13px;
+  }
+  .t-task {
+    color: var(--muted);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .t-status {
+    font-size: 10px;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .t-status.running {
+    color: var(--ok);
+  }
+  .t-status.error {
+    color: var(--danger);
+  }
+  .new {
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-top: 12px;
+    border-top: 1px solid var(--line);
+  }
+  .new input {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 6px 8px;
+    color: var(--fg);
+    font: inherit;
+    font-size: 12px;
+  }
+  .new button {
+    background: var(--accent);
+    color: #0c0d12;
+    border: 0;
+    border-radius: 6px;
+    padding: 6px;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 600;
+  }
+
   main {
     max-width: 1140px;
+    width: 100%;
     margin: 0 auto;
-    padding: 24px 20px 64px;
+    padding: 20px 24px 64px;
+  }
+  .empty.big {
+    margin-top: 80px;
+    text-align: center;
+    font-size: 14px;
   }
   header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-end;
+    gap: 12px;
     border-bottom: 1px solid var(--line);
     padding-bottom: 12px;
-  }
-  .title {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-  }
-  h1 {
-    font-size: 18px;
-    margin: 0;
-    letter-spacing: 0.5px;
   }
   .conn {
     font-size: 11px;
