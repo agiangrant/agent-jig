@@ -10,6 +10,7 @@ const conn = new GovernorConnection();
 
 let sessions = $state<Session[]>([]);
 let activeId = $state<string | null>(null);
+let sidebarOpen = $state(true);
 
 async function loadSessions() {
   try {
@@ -27,21 +28,74 @@ function select(id: string) {
 void loadSessions();
 setInterval(loadSessions, 3000);
 
+// --- New session modal + directory picker ---
+let showNew = $state(false);
 let newRepo = $state("");
 let newTask = $state("");
-async function createSession() {
-  if (!newRepo.trim() || !newTask.trim()) return;
-  const res = await fetch(`${httpBase}/sessions`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ repoPath: newRepo.trim(), prompt: newTask.trim() }),
-  });
-  if (!res.ok) return;
-  const s = (await res.json()) as Session;
+let newWorktree = $state(false);
+let creating = $state(false);
+let createError = $state("");
+
+let browseOpen = $state(false);
+let browsePath = $state("");
+let browseParent = $state<string | null>(null);
+let browseEntries = $state<{ name: string; isRepo: boolean }[]>([]);
+
+function openNew() {
   newRepo = "";
   newTask = "";
-  await loadSessions();
-  select(s.id);
+  newWorktree = false;
+  createError = "";
+  browseOpen = false;
+  showNew = true;
+  void browse(null);
+}
+async function browse(path: string | null) {
+  try {
+    const url = path ? `${httpBase}/fs?path=${encodeURIComponent(path)}` : `${httpBase}/fs`;
+    const data = (await (await fetch(url)).json()) as {
+      path: string;
+      parent: string | null;
+      entries: { name: string; isRepo: boolean }[];
+      error?: string;
+    };
+    if (data.error) return;
+    browsePath = data.path;
+    browseParent = data.parent;
+    browseEntries = data.entries;
+  } catch {
+    /* ignore unreadable dir */
+  }
+}
+async function createSession() {
+  if (!newRepo.trim() || !newTask.trim()) {
+    createError = "Choose a folder and describe the task.";
+    return;
+  }
+  creating = true;
+  createError = "";
+  try {
+    const res = await fetch(`${httpBase}/sessions`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        repoPath: newRepo.trim(),
+        prompt: newTask.trim(),
+        worktree: newWorktree,
+      }),
+    });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string };
+      createError = body.error ?? "Failed to create session.";
+      return;
+    }
+    const s = (await res.json()) as Session;
+    showNew = false;
+    await loadSessions();
+    select(s.id);
+  } finally {
+    creating = false;
+  }
 }
 function repoName(path: string): string {
   return path.split("/").filter(Boolean).pop() ?? path;
@@ -54,9 +108,6 @@ function editEvent(editId: string): GovernorEvent | undefined {
 }
 function filePath(payload: unknown): string {
   return ((payload ?? {}) as { file_path?: string }).file_path ?? "";
-}
-function pathFor(editId: string): string {
-  return filePath(editEvent(editId)?.payload);
 }
 function narrationFor(editId: string): string {
   const e = conn.events.find((x) => x.type === "narration" && x.editId === editId);
@@ -75,25 +126,29 @@ function text(p: unknown): string {
   return ((p ?? {}) as { text?: string }).text ?? "";
 }
 
+// --- Conversation: ask the sidecar, or steer the agent ---
 let message = $state("");
-let anchor = $state("");
 function ask() {
   const t = message.trim();
   if (!t) return;
-  conn.askSidecar(anchor ? `Regarding the edit to ${pathFor(anchor)}: ${t}` : t);
+  conn.askSidecar(t);
   message = "";
 }
 function steer() {
   const t = message.trim();
   if (!t) return;
-  conn.sendDirective(t, anchor || null);
+  conn.sendDirective(t);
   message = "";
 }
 </script>
 
-<div class="shell">
+<div class="shell" class:collapsed={!sidebarOpen}>
   <nav class="tabs">
-    <div class="brand">Governor</div>
+    <div class="brand">
+      <span>Governor</span>
+      <button class="icon" title="Hide sidebar" onclick={() => (sidebarOpen = false)}>‹</button>
+    </div>
+    <button class="newbtn" onclick={openNew}>+ New session</button>
     {#each sessions as s (s.id)}
       <button class="tab" class:active={s.id === activeId} onclick={() => select(s.id)}>
         <span class="t-repo">{repoName(s.repoPath)}</span>
@@ -101,14 +156,12 @@ function steer() {
         <span class="t-status {s.status}">{s.status}</span>
       </button>
     {/each}
-    <form class="new" onsubmit={(e) => { e.preventDefault(); createSession(); }}>
-      <input bind:value={newRepo} placeholder="repo path" />
-      <input bind:value={newTask} placeholder="task" />
-      <button type="submit">+ New session</button>
-    </form>
   </nav>
 
   <main>
+    {#if !sidebarOpen}
+      <button class="reveal" title="Show sidebar" onclick={() => (sidebarOpen = true)}>≡</button>
+    {/if}
     {#if activeId === null}
       <p class="empty big">No session selected. Create one to start supervising.</p>
     {:else}
@@ -227,14 +280,10 @@ function steer() {
             {/each}
           </div>
           <form class="compose" onsubmit={(e) => { e.preventDefault(); steer(); }}>
-            <input type="text" bind:value={message} placeholder="Ask about provenance, or steer the agent…" />
+            <input type="text" bind:value={message} placeholder="Ask a question, or steer the agent…" />
             <div class="actions">
-              <select bind:value={anchor} title="Attach a reference to a pending edit">
-                <option value="">re: (none)</option>
-                {#each conn.queue as e (e.editId)}<option value={e.editId}>re: {e.path}</option>{/each}
-              </select>
               <button type="button" class="ask" onclick={ask}>Ask</button>
-              <button type="submit" class="send">Send → agent</button>
+              <button type="submit" class="steer">Steer</button>
             </div>
           </form>
         </aside>
@@ -243,11 +292,72 @@ function steer() {
   </main>
 </div>
 
+<svelte:window onkeydown={(e) => { if (showNew && e.key === "Escape") showNew = false; }} />
+
+{#if showNew}
+  <div class="overlay">
+    <button class="backdrop" aria-label="Close" onclick={() => (showNew = false)}></button>
+    <div class="modal" role="dialog" aria-modal="true">
+      <h3>New session</h3>
+
+      <label for="repo">Repository</label>
+      <div class="repo-field">
+        <input id="repo" readonly value={newRepo} placeholder="Choose a folder…" />
+        <button type="button" onclick={() => (browseOpen = !browseOpen)}>
+          {browseOpen ? "Close" : "Browse…"}
+        </button>
+      </div>
+
+      {#if browseOpen}
+        <div class="browser">
+          <div class="browser-path">{browsePath}</div>
+          <ul>
+            {#if browseParent}
+              <li><button type="button" class="dir up" onclick={() => browse(browseParent)}>↑ ..</button></li>
+            {/if}
+            {#each browseEntries as e (e.name)}
+              <li>
+                <button type="button" class="dir" onclick={() => browse(`${browsePath}/${e.name}`)}>
+                  📁 {e.name}{#if e.isRepo}<span class="repo-badge">git</span>{/if}
+                </button>
+              </li>
+            {/each}
+          </ul>
+          <button type="button" class="use" onclick={() => { newRepo = browsePath; browseOpen = false; }}>
+            Use this folder
+          </button>
+        </div>
+      {/if}
+
+      <label for="task">Task</label>
+      <textarea id="task" rows="6" bind:value={newTask} placeholder="Describe the work — multi-line is fine…"></textarea>
+
+      <label class="check">
+        <input type="checkbox" bind:checked={newWorktree} />
+        Run in an isolated git worktree
+      </label>
+
+      {#if createError}<p class="err">{createError}</p>{/if}
+
+      <div class="modal-actions">
+        <button type="button" onclick={() => (showNew = false)}>Cancel</button>
+        <button type="button" class="primary" disabled={creating} onclick={createSession}>
+          {creating ? "Creating…" : "Create"}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   .shell {
     display: grid;
-    grid-template-columns: 230px minmax(0, 1fr);
+    grid-template-columns: 240px minmax(0, 1fr);
     min-height: 100vh;
+    transition: grid-template-columns 0.2s ease;
+  }
+  .shell.collapsed {
+    grid-template-columns: 0 minmax(0, 1fr);
   }
   .tabs {
     border-right: 1px solid var(--line);
@@ -255,11 +365,40 @@ function steer() {
     display: flex;
     flex-direction: column;
     gap: 6px;
+    overflow: hidden;
+    white-space: nowrap;
   }
   .brand {
     font-weight: 700;
     letter-spacing: 0.5px;
     padding: 4px 8px 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .icon {
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--muted);
+    cursor: pointer;
+    font: inherit;
+    line-height: 1;
+    padding: 2px 8px;
+  }
+  .icon:hover {
+    color: var(--fg);
+  }
+  .newbtn {
+    background: var(--accent);
+    color: #0c0d12;
+    border: 0;
+    border-radius: 6px;
+    padding: 8px;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 600;
+    margin-bottom: 8px;
   }
   .tab {
     text-align: left;
@@ -303,39 +442,25 @@ function steer() {
   .t-status.error {
     color: var(--danger);
   }
-  .new {
-    margin-top: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding-top: 12px;
-    border-top: 1px solid var(--line);
-  }
-  .new input {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    padding: 6px 8px;
-    color: var(--fg);
-    font: inherit;
-    font-size: 12px;
-  }
-  .new button {
-    background: var(--accent);
-    color: #0c0d12;
-    border: 0;
-    border-radius: 6px;
-    padding: 6px;
-    cursor: pointer;
-    font: inherit;
-    font-weight: 600;
-  }
 
   main {
+    position: relative;
     max-width: 1140px;
     width: 100%;
     margin: 0 auto;
     padding: 20px 24px 64px;
+  }
+  .reveal {
+    position: absolute;
+    top: 16px;
+    left: 12px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--fg);
+    cursor: pointer;
+    font: inherit;
+    padding: 4px 10px;
   }
   .empty.big {
     margin-top: 80px;
@@ -615,19 +740,10 @@ function steer() {
     display: flex;
     gap: 8px;
   }
-  .actions select {
-    flex: 1;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 6px 8px;
-    color: var(--fg);
-    font: inherit;
-    min-width: 0;
-  }
   .actions button {
+    flex: 1;
     border-radius: 8px;
-    padding: 0 14px;
+    padding: 8px 14px;
     cursor: pointer;
     font: inherit;
   }
@@ -636,10 +752,180 @@ function steer() {
     color: var(--fg);
     border: 1px solid var(--line);
   }
-  .actions .send {
+  .actions .steer {
     background: var(--accent);
     color: #0c0d12;
     border: 0;
     font-weight: 600;
+  }
+
+  /* --- New session modal --- */
+  .overlay {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    z-index: 50;
+  }
+  .backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    border: 0;
+    padding: 0;
+    cursor: default;
+  }
+  .modal {
+    position: relative;
+    z-index: 1;
+    background: var(--bg, #0c0d12);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 22px 24px;
+    width: 100%;
+    max-width: 560px;
+    max-height: 86vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .modal h3 {
+    margin: 0 0 8px;
+  }
+  .modal label {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--muted);
+    margin-top: 8px;
+  }
+  .modal label.check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 13px;
+    color: var(--fg);
+    cursor: pointer;
+  }
+  .repo-field {
+    display: flex;
+    gap: 8px;
+  }
+  .repo-field input {
+    flex: 1;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 12px;
+    color: var(--fg);
+    font: inherit;
+    min-width: 0;
+  }
+  .repo-field button,
+  .browser .use {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 14px;
+    color: var(--fg);
+    cursor: pointer;
+    font: inherit;
+  }
+  .browser {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .browser-path {
+    font-size: 11px;
+    color: var(--muted);
+    font-family: ui-monospace, monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .browser ul {
+    max-height: 220px;
+    overflow-y: auto;
+  }
+  .browser .dir {
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    padding: 5px 8px;
+    color: var(--fg);
+    cursor: pointer;
+    font: inherit;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .browser .dir:hover {
+    background: var(--panel);
+  }
+  .browser .dir.up {
+    color: var(--muted);
+  }
+  .repo-badge {
+    font-size: 10px;
+    text-transform: uppercase;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    padding: 0 5px;
+  }
+  .browser .use {
+    align-self: flex-start;
+    font-weight: 600;
+  }
+  .modal textarea {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: var(--fg);
+    font: inherit;
+    resize: vertical;
+  }
+  .err {
+    color: var(--danger);
+    font-size: 13px;
+    margin: 4px 0 0;
+  }
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 12px;
+  }
+  .modal-actions button {
+    border-radius: 8px;
+    padding: 8px 18px;
+    cursor: pointer;
+    font: inherit;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    color: var(--fg);
+  }
+  .modal-actions .primary {
+    background: var(--accent);
+    color: #0c0d12;
+    border: 0;
+    font-weight: 600;
+  }
+  .modal-actions .primary:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
 </style>

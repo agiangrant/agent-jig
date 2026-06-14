@@ -4,6 +4,7 @@ import type { DialMode, Session } from "@governor/contracts";
 import type { Narrator } from "@governor/narrator";
 import type { Storage } from "@governor/store";
 import type { StructuralAnalyzer } from "@governor/structural";
+import { createWorktree } from "@governor/worktree";
 import { GovernedSession } from "./governed-session.ts";
 
 export interface ManagerDeps {
@@ -17,6 +18,8 @@ export interface CreateInput {
   repoPath: string;
   prompt: string;
   mode?: DialMode;
+  /** Run the session in a fresh git worktree (isolating it from the checkout). */
+  worktree?: boolean;
 }
 
 /** Hosts many governed sessions over one shared store/analyzer/narrator. */
@@ -26,8 +29,13 @@ export class SessionManager {
   constructor(private readonly deps: ManagerDeps) {}
 
   create(input: CreateInput): Session {
+    // A worktree-backed session edits an isolated checkout; its path becomes the
+    // session's repoPath, so the agent cwd, diff tracker, and sidecar all follow.
+    const repoPath = input.worktree
+      ? createWorktree(resolve(input.repoPath)).path
+      : resolve(input.repoPath);
     const session = this.deps.store.createSession({
-      repoPath: resolve(input.repoPath),
+      repoPath,
       taskPrompt: input.prompt,
     });
     const gs = new GovernedSession({

@@ -86,6 +86,20 @@ describe("startGovernorServer", () => {
     expect(list.length).toBe(1);
   });
 
+  it("lists subdirectories for the directory picker, marking git repos", async () => {
+    server = await startGovernorServer({ port: 0, dbPath: ":memory:", queryImpl });
+    const data = (await (
+      await fetch(`${server.url}/fs?path=${encodeURIComponent(tmpdir())}`)
+    ).json()) as {
+      path: string;
+      parent: string | null;
+      entries: { name: string; isRepo: boolean }[];
+    };
+    expect(data.path).toBe(tmpdir());
+    expect(Array.isArray(data.entries)).toBe(true);
+    expect(data.entries.every((e) => !e.name.startsWith("."))).toBe(true);
+  });
+
   it("rejects a cross-origin POST /sessions (CSRF→RCE guard)", async () => {
     server = await startGovernorServer({ port: 0, dbPath: ":memory:", queryImpl });
     const res = await fetch(`${server.url}/sessions`, {

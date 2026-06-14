@@ -1,7 +1,36 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
+
+export interface CreatedWorktree {
+  /** Absolute path of the new working tree — the session's repoPath. */
+  path: string;
+  /** The branch the worktree was created on. */
+  branch: string;
+}
+
+/**
+ * Create an isolated git worktree off `repoPath`'s HEAD on a fresh branch, so a
+ * session can edit without touching the user's checkout or other sessions. Throws
+ * if `repoPath` is not inside a git repo. `baseDir` overrides the parent dir
+ * (defaults to `~/.governor/worktrees`), mainly for tests.
+ */
+export function createWorktree(repoPath: string, baseDir?: string): CreatedWorktree {
+  const top = execFileSync("git", ["-C", repoPath, "rev-parse", "--show-toplevel"], {
+    encoding: "utf8",
+  }).trim();
+  const id = randomUUID().slice(0, 8);
+  const branch = `governor/${id}`;
+  const root = baseDir ?? join(homedir(), ".governor", "worktrees");
+  mkdirSync(root, { recursive: true });
+  const path = join(root, `${basename(top)}-${id}`);
+  execFileSync("git", ["-C", top, "worktree", "add", "-b", branch, path, "HEAD"], {
+    stdio: "ignore",
+  });
+  return { path, branch };
+}
 
 /** Map a two-char git porcelain status code to a change kind. */
 function kindOf(status: string): DetectedChange["kind"] {

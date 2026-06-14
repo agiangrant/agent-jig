@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { Worktree } from "./index.ts";
+import { createWorktree, Worktree } from "./index.ts";
 
 let dir: string;
 const git = (...args: string[]) => execFileSync("git", ["-C", dir, ...args], { stdio: "ignore" });
@@ -58,6 +58,28 @@ describe("Worktree", () => {
     expect(wt.isGit).toBe(false);
     writeFileSync(join(plain, "x.ts"), "x");
     expect(wt.detect()).toEqual([]);
+    rmSync(plain, { recursive: true, force: true });
+  });
+});
+
+describe("createWorktree", () => {
+  it("creates an isolated worktree on a fresh branch off HEAD", () => {
+    const base = mkdtempSync(join(tmpdir(), "wt-base-"));
+    const { path, branch } = createWorktree(dir, base);
+    try {
+      expect(branch).toMatch(/^governor\//);
+      expect(existsSync(join(path, "a.ts"))).toBe(true); // checked out from HEAD
+      const list = execFileSync("git", ["-C", dir, "worktree", "list"], { encoding: "utf8" });
+      expect(list).toContain(path);
+    } finally {
+      execFileSync("git", ["-C", dir, "worktree", "remove", "--force", path], { stdio: "ignore" });
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it("throws outside a git repo", () => {
+    const plain = mkdtempSync(join(tmpdir(), "plain-"));
+    expect(() => createWorktree(plain)).toThrow();
     rmSync(plain, { recursive: true, force: true });
   });
 });

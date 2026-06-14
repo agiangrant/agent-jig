@@ -1,7 +1,7 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import type { Server } from "node:http";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { RunSessionDeps } from "@governor/agent-host";
 import { ClientToServer, type DialMode, type Session } from "@governor/contracts";
@@ -90,15 +90,44 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
     await next();
   });
   app.get("/healthz", (c) => c.json({ ok: true }));
+
+  // Server-side directory picker for the New Session modal: the browser can't
+  // hand us an absolute path, but the server runs on the same machine. Lists
+  // subdirectories of `path` (defaults to home), marking those that are git repos.
+  app.get("/fs", (c) => {
+    const q = c.req.query("path");
+    const path = q ? resolve(q) : homedir();
+    try {
+      const entries = readdirSync(path, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && !d.name.startsWith("."))
+        .map((d) => ({ name: d.name, isRepo: existsSync(join(path, d.name, ".git")) }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      const parent = dirname(path);
+      return c.json({ path, parent: parent === path ? null : parent, entries });
+    } catch {
+      return c.json({ error: "cannot read directory" }, 400);
+    }
+  });
+
   app.get("/sessions", (c) => c.json(manager.list()));
   app.post("/sessions", async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as Partial<CreateInput>;
     if (!body.repoPath || !body.prompt) {
       return c.json({ error: "repoPath and prompt are required" }, 400);
     }
-    return c.json(
-      manager.create({ repoPath: body.repoPath, prompt: body.prompt, mode: body.mode }),
-    );
+    try {
+      return c.json(
+        manager.create({
+          repoPath: body.repoPath,
+          prompt: body.prompt,
+          mode: body.mode,
+          worktree: body.worktree,
+        }),
+      );
+    } catch (e) {
+      // e.g. worktree requested on a non-git repo.
+      return c.json({ error: (e as Error).message ?? "could not create session" }, 400);
+    }
   });
   app.get("/*", serveWeb(opts.webRoot ?? defaultWebRoot()));
 
