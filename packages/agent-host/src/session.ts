@@ -20,6 +20,8 @@ export interface RunSessionDeps {
   queryImpl?: typeof query;
   /** When set, flags working-tree changes the agent's gated tools didn't make. */
   worktree?: Worktree;
+  /** Presents an agent `AskUserQuestion` to the human; resolves to the answer text. */
+  askQuestion?: (input: Record<string, unknown>) => Promise<string>;
 }
 
 export interface RunningSession {
@@ -45,6 +47,7 @@ export function runGovernedSession(deps: RunSessionDeps): RunningSession {
     store,
     onEvent,
     tracker,
+    askQuestion: deps.askQuestion,
   });
 
   const input = new InputStream();

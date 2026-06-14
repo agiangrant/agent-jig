@@ -66,6 +66,20 @@ describe("makeCanUseTool", () => {
     expect((events[1]?.payload as { reason?: string }).reason).toBe("use the existing helper");
   });
 
+  it("routes AskUserQuestion to the human and denies with their answer", async () => {
+    const pacer = new Pacer("slowed");
+    const answer = "The developer answered:\n- Library: PapaParse";
+    const gate = makeCanUseTool({ sessionId, pacer, store, askQuestion: async () => answer });
+
+    const decision = await gate("AskUserQuestion", { questions: [] }, opts);
+
+    expect(decision).toEqual({ behavior: "deny", message: answer });
+    const events = store.listEvents(sessionId);
+    expect(events.map((e) => e.type)).toEqual(["tool_call"]);
+    expect(events[0]?.gateState).toBe("pending"); // shown as awaiting in history
+    expect(pacer.queue).toEqual([]); // not a write — never enters the edit queue
+  });
+
   it("lets read-class tools pass immediately and does not enqueue them", async () => {
     const pacer = new Pacer("slowed");
     const gate = makeCanUseTool({ sessionId, pacer, store });

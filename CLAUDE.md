@@ -22,6 +22,11 @@ and the steering channel are all *views over that log*. Don't invent parallel st
   defer/resume fallback needed; `config.gateTimeoutMs` is reserved for a future idle-policy, unused.
 - **Steering** (Phase 3) = a controllable `AsyncIterable` prompt injects directives at the next
   tool-call boundary (the `Query` object has `interrupt`/`setPermissionMode`, not a `streamInput`).
+- **AskUserQuestion**: the agent's built-in "ask the human" tool flows through `canUseTool`;
+  *allowing* it makes the headless SDK try to render a TTY prompt (it hangs). The gate intercepts
+  it, surfaces a `PendingQuestion` to the UI (`question_state`), blocks on the human's
+  `answer_question`, then resolves by **denying with the answer as the message** — `canUseTool`
+  can't return a tool result, so deny-with-message is the channel (same trick as steering/reject).
 - Every tool call is observable on the async message iterator (`assistant` messages carry
   `tool_use` blocks) — that is the event source.
 

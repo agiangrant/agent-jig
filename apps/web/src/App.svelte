@@ -184,6 +184,46 @@ function steer() {
   conn.sendDirective(t);
   message = "";
 }
+
+// --- Answering the agent's AskUserQuestion ---
+let picks = $state<Record<string, string[]>>({});
+let other = $state<Record<string, string>>({});
+let lastQuestionId = "";
+$effect(() => {
+  const id = conn.question?.id ?? "";
+  if (id !== lastQuestionId) {
+    lastQuestionId = id;
+    picks = {};
+    other = {};
+  }
+});
+function isPicked(q: string, label: string): boolean {
+  return (picks[q] ?? []).includes(label);
+}
+function togglePick(q: string, label: string, multi: boolean) {
+  const cur = picks[q] ?? [];
+  const next = multi
+    ? cur.includes(label)
+      ? cur.filter((l) => l !== label)
+      : [...cur, label]
+    : [label];
+  picks = { ...picks, [q]: next };
+}
+function answerFor(q: string): string {
+  const o = (other[q] ?? "").trim();
+  return o.length > 0 ? o : (picks[q] ?? []).join(", ");
+}
+function setOther(q: string, value: string) {
+  other = { ...other, [q]: value };
+}
+function canSubmit(question: { questions: { question: string }[] }): boolean {
+  return question.questions.every((qq) => answerFor(qq.question).length > 0);
+}
+function submitAnswers(question: { id: string; questions: { question: string }[] }) {
+  const answers: Record<string, string> = {};
+  for (const qq of question.questions) answers[qq.question] = answerFor(qq.question);
+  conn.answerQuestion(question.id, answers);
+}
 </script>
 
 <div
@@ -246,6 +286,44 @@ function steer() {
 
       <div class="cols">
         <section class="left">
+          {#if conn.question}
+            {@const aq = conn.question}
+            <section class="question">
+              <h2 class="q-title">The agent is asking you</h2>
+              {#each aq.questions as q (q.question)}
+                <div class="q">
+                  <div class="q-head">
+                    <span class="q-chip">{q.header}</span>
+                    {#if q.multiSelect}<span class="q-multi">choose any</span>{/if}
+                  </div>
+                  <p class="q-text">{q.question}</p>
+                  <div class="opts">
+                    {#each q.options as opt (opt.label)}
+                      <button
+                        class="opt"
+                        class:sel={isPicked(q.question, opt.label)}
+                        onclick={() => togglePick(q.question, opt.label, q.multiSelect)}
+                      >
+                        <span class="opt-label">{opt.label}</span>
+                        {#if opt.description}<span class="opt-desc">{opt.description}</span>{/if}
+                        {#if opt.preview}<pre class="opt-preview">{opt.preview}</pre>{/if}
+                      </button>
+                    {/each}
+                  </div>
+                  <input
+                    class="q-other"
+                    placeholder="Other… (type a custom answer)"
+                    value={other[q.question] ?? ""}
+                    oninput={(e) => setOther(q.question, e.currentTarget.value)}
+                  />
+                </div>
+              {/each}
+              <button class="q-submit" disabled={!canSubmit(aq)} onclick={() => submitAnswers(aq)}>
+                Send answer{aq.questions.length > 1 ? "s" : ""} → agent
+              </button>
+            </section>
+          {/if}
+
           <h2>Queue <span class="count">{conn.queue.length}</span></h2>
           {#if conn.queue.length === 0}
             <p class="empty">Nothing waiting — the agent is working, or idle.</p>
@@ -671,6 +749,110 @@ function steer() {
     list-style: none;
     margin: 0;
     padding: 0;
+  }
+
+  /* --- Agent question --- */
+  .question {
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin: 8px 0 4px;
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+  .q-title {
+    margin: 0 0 10px;
+    color: var(--accent);
+  }
+  .q {
+    margin-bottom: 14px;
+  }
+  .q-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .q-chip {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    padding: 1px 6px;
+  }
+  .q-multi {
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+  }
+  .q-text {
+    margin: 6px 0 10px;
+    font-weight: 600;
+  }
+  .opts {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .opt {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    text-align: left;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 8px 12px;
+    cursor: pointer;
+    font: inherit;
+    color: var(--fg);
+  }
+  .opt:hover {
+    border-color: var(--accent);
+  }
+  .opt.sel {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 16%, var(--panel));
+  }
+  .opt-label {
+    font-weight: 600;
+  }
+  .opt-desc {
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .opt-preview {
+    margin: 6px 0 0;
+    font-size: 11px;
+    color: var(--muted);
+    white-space: pre-wrap;
+    max-height: 160px;
+    overflow: auto;
+  }
+  .q-other {
+    margin-top: 8px;
+    width: 100%;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 7px 10px;
+    color: var(--fg);
+    font: inherit;
+    box-sizing: border-box;
+  }
+  .q-submit {
+    background: var(--accent);
+    color: #0c0d12;
+    border: 0;
+    border-radius: 8px;
+    padding: 9px 16px;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 600;
+  }
+  .q-submit:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 
   .queue li {

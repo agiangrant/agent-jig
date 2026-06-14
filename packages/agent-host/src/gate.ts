@@ -13,7 +13,12 @@ export interface GateDeps {
   onEvent?: (event: GovernorEvent) => void;
   /** Detects working-tree changes the agent's gated tools didn't make. */
   tracker?: ProvenanceTracker;
+  /** Presents an `AskUserQuestion` to the human; resolves to the answer text. */
+  askQuestion?: (input: Record<string, unknown>) => Promise<string>;
 }
+
+/** The agent's built-in "ask the human" tool. */
+const ASK_USER_QUESTION = "AskUserQuestion";
 
 /**
  * The SDK `canUseTool` callback — where backpressure is applied. Governor is the
@@ -22,7 +27,7 @@ export interface GateDeps {
  * else is logged and allowed at once.
  */
 export function makeCanUseTool(deps: GateDeps): CanUseTool {
-  const { sessionId, pacer, store, onEvent, tracker } = deps;
+  const { sessionId, pacer, store, onEvent, tracker, askQuestion } = deps;
   const config = store.getConfig();
 
   return async (toolName, input) => {
@@ -40,6 +45,7 @@ export function makeCanUseTool(deps: GateDeps): CanUseTool {
     }
 
     const write = isWriteClass(toolName);
+    const isQuestion = toolName === ASK_USER_QUESTION && askQuestion !== undefined;
     const path = extractPath(input);
     const assessment = path ? scoreRisk(path, config.riskRules, config.defaultMode) : null;
     const risk = assessment?.risk ?? null;
@@ -52,10 +58,18 @@ export function makeCanUseTool(deps: GateDeps): CanUseTool {
       toolName,
       editId,
       risk,
-      gateState: write ? (willGate ? "pending" : "open") : "open",
+      gateState: write ? (willGate ? "pending" : "open") : isQuestion ? "pending" : "open",
       payload: input,
     });
     onEvent?.(call);
+
+    // AskUserQuestion: block on the human, then hand the answer back as the deny
+    // message. canUseTool can't return a tool result, and *allowing* it would make
+    // the headless SDK try to render a TTY prompt — the stuck state we're fixing.
+    if (isQuestion && askQuestion) {
+      const answer = await askQuestion(input);
+      return { behavior: "deny", message: answer };
+    }
 
     if (write && editId !== null) {
       const outcome = await pacer.requestGate({

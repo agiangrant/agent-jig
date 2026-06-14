@@ -1,9 +1,12 @@
+import { randomUUID } from "node:crypto";
 import { type RunningSession, type RunSessionDeps, runGovernedSession } from "@governor/agent-host";
 import type {
   ChangeView,
   ClientToServer,
   DialMode,
   GovernorEvent,
+  PendingQuestion,
+  Question,
   Session,
 } from "@governor/contracts";
 import { groupByIntent, isWriteClass, Pacer } from "@governor/core";
@@ -61,6 +64,9 @@ export class GovernedSession {
   /** Generated intent labels, keyed by group id (first edit). */
   private readonly intentLabels = new Map<string, string>();
   private readonly intentPending = new Set<string>();
+  /** The agent's open question (if any) and the resolver that answers it. */
+  private question: PendingQuestion | null = null;
+  private answerQuestion: ((message: string) => void) | null = null;
 
   constructor(deps: GovernedSessionDeps) {
     this.id = deps.session.id;
@@ -94,6 +100,7 @@ export class GovernedSession {
       worktree: new Worktree(this.repoPath),
       onEvent,
       queryImpl: deps.queryImpl,
+      askQuestion: (input) => this.askHuman(input),
     });
 
     this.sidecar = new Sidecar({ repoPath: this.repoPath, queryImpl: deps.queryImpl });
@@ -130,6 +137,7 @@ export class GovernedSession {
       this.broadcaster.send(ws, { type: "event", event });
     }
     this.broadcaster.send(ws, { type: "change_view", view: this.changeView() });
+    this.broadcaster.send(ws, { type: "question_state", question: this.question });
     this.broadcaster.add(ws);
   }
 
@@ -139,9 +147,45 @@ export class GovernedSession {
     else if (msg.type === "reject_edit") this.rejectEdit(msg.editId, msg.reason);
     else if (msg.type === "send_directive") this.sendDirective(msg.text, msg.anchorEditId);
     else if (msg.type === "sidecar_message") this.askSidecar(msg.text);
+    else if (msg.type === "answer_question") this.resolveQuestion(msg.questionId, msg.answers);
+  }
+
+  /**
+   * The agent called AskUserQuestion. Surface it to the human and block until they
+   * answer; resolve with the formatted answer, which the gate hands back to the
+   * agent as the deny message (its only channel for returning a tool result).
+   */
+  private askHuman(input: Record<string, unknown>): Promise<string> {
+    const questions = parseQuestions(input);
+    const pending: PendingQuestion = { id: randomUUID(), questions };
+    this.question = pending;
+    this.broadcaster.broadcast({ type: "question_state", question: pending });
+    return new Promise<string>((resolve) => {
+      this.answerQuestion = resolve;
+    });
+  }
+
+  private resolveQuestion(questionId: string, answers: Record<string, string>): void {
+    if (this.question === null || this.question.id !== questionId) return;
+    const resolve = this.answerQuestion;
+    const message = formatAnswers(this.question, answers);
+    // Log the human's answer so it shows in history and feeds the sidecar.
+    const event = this.store.appendEvent({
+      sessionId: this.id,
+      type: "directive",
+      payload: { text: message },
+    });
+    this.broadcaster.broadcast({ type: "event", event });
+    this.question = null;
+    this.answerQuestion = null;
+    this.broadcaster.broadcast({ type: "question_state", question: null });
+    resolve?.(message);
   }
 
   async close(): Promise<void> {
+    // Unblock a pending question so the agent's canUseTool await doesn't hang.
+    this.answerQuestion?.("The developer ended the session without answering.");
+    this.answerQuestion = null;
     await this.running.interrupt().catch(() => {});
     await this.sidecar.close().catch(() => {});
   }
@@ -303,4 +347,37 @@ function heuristicTitle(prompt: string): string {
   const base = firstLine || prompt.trim();
   if (base.length === 0) return "Untitled session";
   return base.length <= 56 ? base : `${base.slice(0, 55).trimEnd()}…`;
+}
+
+/** Defensively turn the agent's AskUserQuestion input into our Question shape. */
+function parseQuestions(input: Record<string, unknown>): Question[] {
+  const raw = Array.isArray(input.questions) ? (input.questions as unknown[]) : [];
+  return raw.map((q) => {
+    const o = (q ?? {}) as {
+      question?: string;
+      header?: string;
+      multiSelect?: boolean;
+      options?: { label?: string; description?: string; preview?: string }[];
+    };
+    return {
+      header: o.header ?? "",
+      question: o.question ?? "",
+      multiSelect: Boolean(o.multiSelect),
+      options: (o.options ?? []).map((opt) => ({
+        label: opt.label ?? "",
+        description: opt.description ?? "",
+        preview: opt.preview,
+      })),
+    };
+  });
+}
+
+/** The message handed back to the agent as the answer to its question. */
+function formatAnswers(pending: PendingQuestion, answers: Record<string, string>): string {
+  const lines = pending.questions.map((q) => {
+    const a = answers[q.question]?.trim();
+    return `- ${q.header || q.question}: ${a && a.length > 0 ? a : "(no answer)"}`;
+  });
+  const plural = pending.questions.length > 1 ? "s" : "";
+  return `The developer answered your question${plural}:\n${lines.join("\n")}`;
 }

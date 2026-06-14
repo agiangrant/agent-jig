@@ -169,6 +169,32 @@ export const PendingEdit = z.object({
 });
 export type PendingEdit = z.infer<typeof PendingEdit>;
 
+/** One option the agent offered for a question. */
+export const QuestionOption = z.object({
+  label: z.string(),
+  description: z.string().default(""),
+  /** Optional rich preview (markdown) for comparing options. */
+  preview: z.string().optional(),
+});
+export type QuestionOption = z.infer<typeof QuestionOption>;
+
+export const Question = z.object({
+  /** Short chip label, e.g. "Library". */
+  header: z.string(),
+  /** The full question text — also the key used in the answers map. */
+  question: z.string(),
+  options: z.array(QuestionOption),
+  multiSelect: z.boolean().default(false),
+});
+export type Question = z.infer<typeof Question>;
+
+/** The agent's `AskUserQuestion`, awaiting the human — a non-write item in the queue. */
+export const PendingQuestion = z.object({
+  id: z.string(),
+  questions: z.array(Question),
+});
+export type PendingQuestion = z.infer<typeof PendingQuestion>;
+
 export const ServerToClient = z.discriminatedUnion("type", [
   z.object({ type: z.literal("session_state"), session: Session }),
   z.object({ type: z.literal("event"), event: GovernorEvent }),
@@ -176,6 +202,7 @@ export const ServerToClient = z.discriminatedUnion("type", [
   z.object({ type: z.literal("dial_state"), mode: DialMode }),
   z.object({ type: z.literal("change_view"), view: ChangeView }),
   z.object({ type: z.literal("sidecar_reply"), text: z.string() }),
+  z.object({ type: z.literal("question_state"), question: PendingQuestion.nullable() }),
 ]);
 export type ServerToClient = z.infer<typeof ServerToClient>;
 
@@ -189,5 +216,11 @@ export const ClientToServer = z.discriminatedUnion("type", [
     anchorEditId: z.string().nullable().default(null),
   }),
   z.object({ type: z.literal("sidecar_message"), text: z.string() }),
+  z.object({
+    type: z.literal("answer_question"),
+    questionId: z.string(),
+    /** question text → chosen answer (multi-select comma-joined). */
+    answers: z.record(z.string(), z.string()),
+  }),
 ]);
 export type ClientToServer = z.infer<typeof ClientToServer>;

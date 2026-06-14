@@ -4,6 +4,7 @@ import type {
   DialMode,
   GovernorEvent,
   PendingEdit,
+  PendingQuestion,
   ServerToClient,
   Session,
 } from "@governor/contracts";
@@ -15,6 +16,8 @@ export class GovernorConnection {
   queue = $state<PendingEdit[]>([]);
   events = $state<GovernorEvent[]>([]);
   changeView = $state<ChangeView>([]);
+  /** The agent's open question, if it's waiting on the human. */
+  question = $state<PendingQuestion | null>(null);
   /** One unified human↔system conversation: questions, sidecar replies, and steers. */
   conversation = $state<Array<{ role: "you" | "sidecar" | "steer"; text: string }>>([]);
   connected = $state(false);
@@ -29,6 +32,7 @@ export class GovernorConnection {
     this.queue = [];
     this.events = [];
     this.changeView = [];
+    this.question = null;
     this.conversation = [];
     this.connected = false;
 
@@ -63,6 +67,9 @@ export class GovernorConnection {
       case "sidecar_reply":
         this.conversation = [...this.conversation, { role: "sidecar", text: msg.text }];
         break;
+      case "question_state":
+        this.question = msg.question;
+        break;
     }
   }
 
@@ -95,5 +102,11 @@ export class GovernorConnection {
   askSidecar(text: string): void {
     this.conversation = [...this.conversation, { role: "you", text }];
     this.#send({ type: "sidecar_message", text });
+  }
+
+  /** Answer the agent's open question: question text → chosen answer. */
+  answerQuestion(questionId: string, answers: Record<string, string>): void {
+    this.#send({ type: "answer_question", questionId, answers });
+    this.question = null;
   }
 }
