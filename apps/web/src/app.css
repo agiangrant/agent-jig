@@ -11,6 +11,10 @@
   /* Readable text on accent/warn-filled buttons & badges (theme-derived). */
   --on-accent: #0c0d12;
   --on-warn: #0c0d12;
+  /* Fonts & tab size (overridden by Settings). */
+  --ui-font: ui-monospace, "SF Mono", Menlo, monospace;
+  --code-font: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --tab-size: 2;
   color-scheme: dark;
 }
 
@@ -22,9 +26,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--fg);
-  font:
-    14px / 1.5 ui-monospace,
-    "SF Mono",
-    Menlo,
-    monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  font-family: var(--ui-font);
 }

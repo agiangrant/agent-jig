@@ -3,10 +3,13 @@ import type { GovernorEvent, Session, SessionSummary } from "@governor/contracts
 import DiffView from "./lib/DiffView.svelte";
 import { GovernorConnection } from "./lib/connection.svelte.ts";
 import { diffMode } from "./lib/diffMode.svelte.ts";
+import { settings } from "./lib/settings.svelte.ts";
 import { theme } from "./lib/theme.svelte.ts";
 
 void theme.init(); // load custom themes + apply the saved selection's chrome
+settings.apply(); // apply persisted fonts + tab size
 
+let showSettings = $state(false);
 let showTheme = $state(false);
 let themeJson = $state("");
 let themeError = $state("");
@@ -401,6 +404,7 @@ const commands = $derived<Command[]>([
         },
       ]
     : []),
+  { id: "settings", label: "Settings…", run: () => (showSettings = true) },
   { id: "new", label: "New session…", run: openNew },
   { id: "import-theme", label: "Import VSCode theme…", run: () => (showTheme = true) },
   ...sessions
@@ -448,6 +452,7 @@ function onGlobalKey(e: KeyboardEvent) {
   if (e.key === "Escape") {
     showNew = false;
     showTheme = false;
+    showSettings = false;
     paletteOpen = false;
   }
 }
@@ -512,17 +517,7 @@ function onGlobalKey(e: KeyboardEvent) {
     </div>
 
     <div class="nav-footer">
-      <select
-        class="theme-pick"
-        title="Color theme"
-        value={theme.current}
-        onchange={(e) => theme.select(e.currentTarget.value)}
-      >
-        {#each theme.available as t (t)}<option value={t}>{t}</option>{/each}
-      </select>
-      <button class="theme-import" title="Import a VSCode theme (JSON)" onclick={() => (showTheme = true)}>
-        +
-      </button>
+      <button class="settings-btn" onclick={() => (showSettings = true)}>⚙ Settings</button>
     </div>
   </nav>
 
@@ -826,6 +821,84 @@ function onGlobalKey(e: KeyboardEvent) {
   </div>
 {/if}
 
+{#if showSettings}
+  <div class="overlay">
+    <button class="backdrop" aria-label="Close" onclick={() => (showSettings = false)}></button>
+    <div class="modal settings" role="dialog" aria-modal="true">
+      <h3>Settings</h3>
+
+      <div class="set-row">
+        <label for="set-theme">Theme</label>
+        <div class="set-control">
+          <select id="set-theme" value={theme.current} onchange={(e) => theme.select(e.currentTarget.value)}>
+            {#each theme.available as t (t)}<option value={t}>{t}</option>{/each}
+          </select>
+          <button type="button" onclick={() => (showTheme = true)}>Import…</button>
+        </div>
+      </div>
+
+      <div class="set-row">
+        <span class="set-label">Diff layout</span>
+        <div class="set-control">
+          <button class="set-seg" class:on={diffMode.mode === "split"} onclick={() => diffMode.set("split")}>Side-by-side</button>
+          <button class="set-seg" class:on={diffMode.mode === "unified"} onclick={() => diffMode.set("unified")}>Unified</button>
+          <button class="set-seg" class:on={diffMode.mode === "ba"} onclick={() => diffMode.set("ba")}>Before/After</button>
+        </div>
+      </div>
+
+      <div class="set-row">
+        <label for="set-lines">Line numbers</label>
+        <div class="set-control">
+          <input id="set-lines" type="checkbox" checked={diffMode.lineNumbers} onchange={() => diffMode.toggleLineNumbers()} />
+        </div>
+      </div>
+
+      <div class="set-row">
+        <label for="set-tab">Tab size</label>
+        <div class="set-control">
+          <input id="set-tab" type="number" min="1" max="8" value={settings.tabSize} oninput={(e) => settings.setTabSize(Number(e.currentTarget.value))} />
+          <span class="set-hint">columns per tab (only affects literal tab characters)</span>
+        </div>
+      </div>
+
+      <div class="set-row">
+        <label for="set-uifont">UI font</label>
+        <div class="set-control">
+          <input id="set-uifont" list="font-suggestions" placeholder="default" value={settings.uiFont} oninput={(e) => settings.setUiFont(e.currentTarget.value)} />
+        </div>
+      </div>
+
+      <div class="set-row">
+        <label for="set-codefont">Code font</label>
+        <div class="set-control">
+          <input id="set-codefont" list="font-suggestions" placeholder="default" value={settings.codeFont} oninput={(e) => settings.setCodeFont(e.currentTarget.value)} />
+        </div>
+      </div>
+
+      <datalist id="font-suggestions">
+        <option value="JetBrains Mono"></option>
+        <option value="Fira Code"></option>
+        <option value="Cascadia Code"></option>
+        <option value="SF Mono"></option>
+        <option value="Menlo"></option>
+        <option value="Monaco"></option>
+        <option value="Consolas"></option>
+        <option value="Source Code Pro"></option>
+        <option value="IBM Plex Mono"></option>
+        <option value="system-ui"></option>
+        <option value="Inter"></option>
+        <option value="Helvetica Neue"></option>
+      </datalist>
+
+      <p class="set-hint">Fonts use any family installed on your machine.</p>
+
+      <div class="modal-actions">
+        <button type="button" class="primary" onclick={() => (showSettings = false)}>Done</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   .shell {
     position: relative;
@@ -1031,29 +1104,89 @@ function onGlobalKey(e: KeyboardEvent) {
     display: flex;
     gap: 6px;
   }
-  .theme-pick {
+  .settings-btn {
     flex: 1;
-    min-width: 0;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--fg);
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    padding: 7px 8px;
+    text-align: left;
+  }
+  .settings-btn:hover {
+    border-color: var(--accent);
+  }
+
+  /* Settings panel */
+  .set-row {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 12px;
+    align-items: center;
+    margin: 12px 0;
+  }
+  .set-row > label,
+  .set-label {
+    color: var(--muted);
+    font-size: 13px;
+  }
+  .set-control {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .set-control select,
+  .set-control input:not([type]),
+  .set-control input[type="number"] {
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: 6px;
     color: var(--fg);
     font: inherit;
-    font-size: 12px;
-    padding: 5px 6px;
+    font-size: 13px;
+    padding: 6px 8px;
+    min-width: 0;
   }
-  .theme-import {
+  .set-control input[type="number"] {
+    width: 64px;
+  }
+  .set-control input[list] {
+    flex: 1;
+  }
+  .set-control select {
+    flex: 1;
+  }
+  .set-control > button {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--fg);
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    padding: 6px 10px;
+  }
+  .set-seg {
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: 6px;
     color: var(--muted);
     cursor: pointer;
     font: inherit;
-    padding: 0 10px;
+    font-size: 12px;
+    padding: 5px 9px;
   }
-  .theme-import:hover {
+  .set-seg.on {
     color: var(--fg);
     border-color: var(--accent);
+  }
+  .set-hint {
+    color: var(--muted);
+    font-size: 11px;
   }
   .hint {
     color: var(--muted);
