@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Pacer } from "@governor/core";
 import { SqliteStorage } from "@governor/store";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -78,6 +81,26 @@ describe("makeCanUseTool", () => {
     expect(events.map((e) => e.type)).toEqual(["tool_call"]);
     expect(events[0]?.gateState).toBe("open"); // resolved — no longer "pending"
     expect(pacer.queue).toEqual([]); // not a write — never enters the edit queue
+  });
+
+  it("annotates an Edit with the real start line from the file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gate-"));
+    writeFileSync(
+      join(dir, "a.ts"),
+      "const a = 1;\nconst b = 2;\nconst target = 3;\nconst d = 4;\n",
+    );
+    const pacer = new Pacer("realtime");
+    const gate = makeCanUseTool({ sessionId, pacer, store, cwd: dir });
+
+    await gate(
+      "Edit",
+      { file_path: "a.ts", old_string: "const target = 3;", new_string: "x" },
+      opts,
+    );
+
+    const ev = store.listEvents(sessionId).find((e) => e.type === "tool_call");
+    expect((ev?.payload as { startLine?: number }).startLine).toBe(3);
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("lets read-class tools pass immediately and does not enqueue them", async () => {

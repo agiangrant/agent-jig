@@ -34,19 +34,19 @@ const hunks: Hunk[] = $derived(toHunks(toolName, payload));
       {#if diffMode.mode === "split"}
         <div class="split">
           <div class="pane del">
-            {#if h.old.length}<Code code={h.old.join("\n")} path={filePath} numbered={diffMode.lineNumbers} />{:else}<div class="empty">—</div>{/if}
+            {#if h.old.length}<Code code={h.old.join("\n")} path={filePath} numbered={diffMode.lineNumbers} startLine={h.startLine} />{:else}<div class="empty">—</div>{/if}
           </div>
           <div class="pane add">
-            {#if h.new.length}<Code code={h.new.join("\n")} path={filePath} numbered={diffMode.lineNumbers} />{:else}<div class="empty">—</div>{/if}
+            {#if h.new.length}<Code code={h.new.join("\n")} path={filePath} numbered={diffMode.lineNumbers} startLine={h.startLine} />{:else}<div class="empty">—</div>{/if}
           </div>
         </div>
       {:else if diffMode.mode === "unified"}
-        {#if h.old.length}<div class="block del"><Code code={h.old.join("\n")} path={filePath} numbered={diffMode.lineNumbers} /></div>{/if}
-        {#if h.new.length}<div class="block add"><Code code={h.new.join("\n")} path={filePath} numbered={diffMode.lineNumbers} /></div>{/if}
+        {#if h.old.length}<div class="block del"><Code code={h.old.join("\n")} path={filePath} numbered={diffMode.lineNumbers} startLine={h.startLine} /></div>{/if}
+        {#if h.new.length}<div class="block add"><Code code={h.new.join("\n")} path={filePath} numbered={diffMode.lineNumbers} startLine={h.startLine} /></div>{/if}
       {:else}
         {@const side = diffMode.side === "before" ? h.old : h.new}
         <div class="block {diffMode.side === 'before' ? 'del' : 'add'}">
-          <Code code={side.join("\n")} path={filePath} numbered={diffMode.lineNumbers} />
+          <Code code={side.join("\n")} path={filePath} numbered={diffMode.lineNumbers} startLine={h.startLine} />
         </div>
       {/if}
     {/each}

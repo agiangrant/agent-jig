@@ -54,6 +54,7 @@ export function runGovernedSession(deps: RunSessionDeps): RunningSession {
     onEvent,
     tracker,
     askQuestion: deps.askQuestion,
+    cwd: session.repoPath,
   });
 
   const input = new InputStream();
