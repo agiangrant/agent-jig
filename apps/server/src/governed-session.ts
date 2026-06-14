@@ -31,6 +31,8 @@ export interface GovernedSessionDeps {
   resumeClaudeId?: string;
   /** View-only rehydration: reconnect to stored state without running an agent. */
   detached?: boolean;
+  /** Start the agent in plan mode (plans; tools don't execute). */
+  planMode?: boolean;
   /** Fired when this session's attention state changes (queue/question/clients). */
   onAttention?: () => void;
 }
@@ -126,6 +128,7 @@ export class GovernedSession {
           queryImpl: deps.queryImpl,
           askQuestion: (input) => this.askHuman(input),
           resume: deps.resumeClaudeId,
+          planMode: deps.planMode,
           onSessionId: (cid) => this.store.setClaudeSessionId(this.id, cid),
         });
 

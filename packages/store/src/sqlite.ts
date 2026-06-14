@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   task_prompt        TEXT NOT NULL,
   title              TEXT,
   claude_session_id  TEXT,
+  plan_mode          INTEGER,
   status             TEXT NOT NULL,
   started_at         INTEGER NOT NULL,
   ended_at           INTEGER
@@ -119,6 +120,7 @@ export class SqliteStorage implements Storage {
     if (!has("claude_session_id")) {
       this.db.exec("ALTER TABLE sessions ADD COLUMN claude_session_id TEXT");
     }
+    if (!has("plan_mode")) this.db.exec("ALTER TABLE sessions ADD COLUMN plan_mode INTEGER");
   }
 
   createSession(input: NewSession): Session {
@@ -133,10 +135,10 @@ export class SqliteStorage implements Storage {
     };
     this.db
       .prepare(
-        `INSERT INTO sessions (id, repo_path, task_prompt, title, status, started_at, ended_at)
-         VALUES (@id, @repoPath, @taskPrompt, @title, @status, @startedAt, @endedAt)`,
+        `INSERT INTO sessions (id, repo_path, task_prompt, title, plan_mode, status, started_at, ended_at)
+         VALUES (@id, @repoPath, @taskPrompt, @title, @planMode, @status, @startedAt, @endedAt)`,
       )
-      .run(session);
+      .run({ ...session, planMode: input.planMode ? 1 : 0 });
     return session;
   }
 
@@ -163,6 +165,13 @@ export class SqliteStorage implements Storage {
       | { claude_session_id: string | null }
       | undefined;
     return row?.claude_session_id ?? null;
+  }
+
+  getPlanMode(id: string): boolean {
+    const row = this.db.prepare("SELECT plan_mode FROM sessions WHERE id = ?").get(id) as
+      | { plan_mode: number | null }
+      | undefined;
+    return row?.plan_mode === 1;
   }
 
   setSessionStatus(id: string, status: SessionStatus, endedAt: number | null = null): void {

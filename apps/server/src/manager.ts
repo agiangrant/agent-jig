@@ -20,6 +20,8 @@ export interface CreateInput {
   mode?: DialMode;
   /** Run the session in a fresh git worktree (isolating it from the checkout). */
   worktree?: boolean;
+  /** Start the agent in plan mode (plans; tools don't execute). */
+  planMode?: boolean;
 }
 
 /** Only auto-resume sessions whose last activity is this recent (else view-only). */
@@ -60,6 +62,7 @@ export class SessionManager {
           narrator: this.deps.narrator,
           queryImpl: this.deps.queryImpl,
           resumeClaudeId: claudeId ?? undefined,
+          planMode: this.deps.store.getPlanMode(session.id),
           onAttention: () => this.broadcastSummary(),
         });
       } catch {
@@ -94,6 +97,7 @@ export class SessionManager {
     const session = this.deps.store.createSession({
       repoPath,
       taskPrompt: input.prompt,
+      planMode: input.planMode,
     });
     const gs = new GovernedSession({
       session,
@@ -102,6 +106,7 @@ export class SessionManager {
       analyzer: this.deps.analyzer,
       narrator: this.deps.narrator,
       queryImpl: this.deps.queryImpl,
+      planMode: input.planMode,
       onAttention: () => this.broadcastSummary(),
     });
     this.sessions.set(session.id, gs);

@@ -86,4 +86,31 @@ describe("runGovernedSession", () => {
     expect(seen).toEqual(["claude-xyz"]);
     store.close();
   });
+
+  it("starts in plan mode when requested", async () => {
+    const store = new SqliteStorage(":memory:");
+    const session = store.createSession({ repoPath: "/r", taskPrompt: "t" });
+    let mode: string | undefined;
+    const queryImpl = ((args: { options?: { permissionMode?: string } }) => {
+      mode = args.options?.permissionMode;
+      async function* gen(): AsyncGenerator<never, void> {}
+      return Object.assign(gen(), {
+        interrupt: async () => {},
+        setPermissionMode: async () => {},
+        setModel: async () => {},
+      });
+    }) as unknown as RunSessionDeps["queryImpl"];
+
+    const running = runGovernedSession({
+      session,
+      prompt: "t",
+      pacer: new Pacer("realtime"),
+      store,
+      queryImpl,
+      planMode: true,
+    });
+    await running.result;
+    expect(mode).toBe("plan");
+    store.close();
+  });
 });

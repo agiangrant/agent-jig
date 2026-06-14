@@ -12,7 +12,9 @@ and the steering channel are all *views over that log*. Don't invent parallel st
 
 ## Hard architectural facts (verified against the Agent SDK)
 
-- The whole session runs in **one Node process**: Hono+ws server + the hosted `query()` session +
+- A session can start in **plan mode** (New Session modal / `planMode`): the agent plans and tools don't execute — wired to the SDK's `permissionMode: "plan"` in `runGovernedSession`, persisted (`sessions.plan_mode`) so a resumed session keeps it.
+
+The whole session runs in **one Node process**: Hono+ws server + the hosted `query()` session +
   SQLite. The pacing semaphore (`Pacer` in `@governor/core`) is therefore plain in-memory — **no IPC**.
 - **Backpressure** = the SDK `canUseTool` callback `await`s `Pacer.requestGate()` for write-class
   tools; the UI's `ack_edit` resolves it. Read/search/test tools pass freely ("backpressure on

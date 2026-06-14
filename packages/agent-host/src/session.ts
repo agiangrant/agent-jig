@@ -26,6 +26,8 @@ export interface RunSessionDeps {
   resume?: string;
   /** Fires once with the SDK session id so it can be persisted for later resume. */
   onSessionId?: (id: string) => void;
+  /** Start in plan mode — the agent plans; tools don't execute. */
+  planMode?: boolean;
 }
 
 export interface RunningSession {
@@ -69,7 +71,7 @@ export function runGovernedSession(deps: RunSessionDeps): RunningSession {
     prompt: input,
     options: {
       cwd: session.repoPath,
-      permissionMode: "default",
+      permissionMode: deps.planMode ? "plan" : "default",
       canUseTool,
       ...(deps.resume ? { resume: deps.resume } : {}),
       ...deps.options,

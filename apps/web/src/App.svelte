@@ -214,6 +214,7 @@ let showNew = $state(false);
 let newRepo = $state("");
 let newTask = $state("");
 let newWorktree = $state(false);
+let newPlan = $state(false);
 let creating = $state(false);
 let createError = $state("");
 
@@ -241,6 +242,7 @@ function openNew() {
   newRepo = "";
   newTask = "";
   newWorktree = false;
+  newPlan = false;
   createError = "";
   showNew = true;
 }
@@ -269,6 +271,7 @@ async function createSession() {
         repoPath: newRepo.trim(),
         prompt: newTask.trim(),
         worktree: newWorktree,
+        planMode: newPlan,
       }),
     });
     if (!res.ok) {
@@ -862,6 +865,11 @@ function onGlobalKey(e: KeyboardEvent) {
       <label class="check">
         <input type="checkbox" bind:checked={newWorktree} />
         Run in an isolated git worktree
+      </label>
+
+      <label class="check">
+        <input type="checkbox" bind:checked={newPlan} />
+        Plan mode (agent plans first; tools don't execute)
       </label>
 
       {#if createError}<p class="err">{createError}</p>{/if}

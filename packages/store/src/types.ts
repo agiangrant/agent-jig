@@ -10,6 +10,8 @@ import type {
 export interface NewSession {
   repoPath: string;
   taskPrompt: string;
+  /** Start the agent in plan mode (it plans; tools don't execute). */
+  planMode?: boolean;
 }
 
 /** An event before the store assigns id/seq/ts. */
@@ -36,6 +38,8 @@ export interface Storage {
   /** The SDK's own session id, captured for cross-process resume. */
   setClaudeSessionId(id: string, claudeId: string): void;
   getClaudeSessionId(id: string): string | null;
+  /** Whether the session was started in plan mode (preserved across resume). */
+  getPlanMode(id: string): boolean;
 
   /** Appends an event, assigning id/seq/ts, and returns the stored row. */
   appendEvent(event: NewEvent): GovernorEvent;

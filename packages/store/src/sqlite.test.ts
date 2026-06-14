@@ -57,6 +57,13 @@ describe("SqliteStorage", () => {
     expect(store.listEvents(s.id)[0]?.gateState).toBe("open");
   });
 
+  it("stores plan mode per session", () => {
+    const a = store.createSession({ repoPath: "/r", taskPrompt: "t", planMode: true });
+    const b = store.createSession({ repoPath: "/r", taskPrompt: "t" });
+    expect(store.getPlanMode(a.id)).toBe(true);
+    expect(store.getPlanMode(b.id)).toBe(false);
+  });
+
   it("deletes a session and its events", () => {
     const s = store.createSession({ repoPath: "/r", taskPrompt: "t" });
     store.appendEvent({ sessionId: s.id, type: "session_start", payload: {} });

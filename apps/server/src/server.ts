@@ -146,6 +146,7 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
           prompt: body.prompt,
           mode: body.mode,
           worktree: body.worktree,
+          planMode: body.planMode,
         }),
       );
     } catch (e) {
