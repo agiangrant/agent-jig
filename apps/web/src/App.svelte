@@ -29,6 +29,9 @@ const conn = new GovernorConnection();
 let sessions = $state<SessionSummary[]>([]);
 let activeId = $state<string | null>(null);
 let sidebarOpen = $state(true);
+// Measured header height so the sticky conversation column tucks right below it
+// (the header grows when the prompt accordion is expanded).
+let headerH = $state(0);
 
 // Remember the active session across refreshes/restarts (URL hash wins, then storage).
 const ACTIVE_KEY = "governor:activeSession";
@@ -467,7 +470,7 @@ function onGlobalKey(e: KeyboardEvent) {
     {#if activeId === null}
       <p class="empty big">No session selected. Create one to start supervising.</p>
     {:else}
-      <header class:shifted={!sidebarOpen}>
+      <header class:shifted={!sidebarOpen} bind:clientHeight={headerH}>
         <div class="head-top">
           <h1 class="title">{conn.session?.title ?? conn.session?.taskPrompt ?? "Session"}</h1>
           <div class="head-controls">
@@ -622,7 +625,7 @@ function onGlobalKey(e: KeyboardEvent) {
           </details>
         </section>
 
-        <aside class="right">
+        <aside class="right" style="top: {headerH + 12}px">
           <h2>Conversation</h2>
           <div class="chat">
             {#if conn.conversation.length === 0}
@@ -1002,7 +1005,7 @@ function onGlobalKey(e: KeyboardEvent) {
     background: var(--bg, #0c0d12);
     border-bottom: 1px solid var(--line);
     margin: 0 -24px 0;
-    padding: 14px 24px 12px;
+    padding: 7px 24px;
   }
   header.shifted {
     padding-left: 52px;
@@ -1016,8 +1019,8 @@ function onGlobalKey(e: KeyboardEvent) {
     flex: 1;
     min-width: 0;
     margin: 0;
-    font-size: 18px;
-    font-weight: 700;
+    font-size: 15px;
+    font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1029,7 +1032,7 @@ function onGlobalKey(e: KeyboardEvent) {
     flex-shrink: 0;
   }
   .prompt-acc {
-    margin-top: 8px;
+    margin-top: 5px;
   }
   .prompt-acc summary {
     cursor: pointer;
@@ -1074,7 +1077,8 @@ function onGlobalKey(e: KeyboardEvent) {
   }
   .right {
     position: sticky;
-    top: 16px;
+    /* `top` is set inline from the measured header height so an expanded
+       prompt never covers the conversation. */
   }
 
   h2 {
