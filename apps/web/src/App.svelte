@@ -11,6 +11,22 @@ settings.apply(); // apply persisted fonts + tab size
 
 let showSettings = $state(false);
 let showTheme = $state(false);
+
+// Font suggestions: the machine's actual installed families when the Local Font
+// Access API is available (Chromium, on a user gesture); otherwise curated lists.
+let installedFonts = $state<string[]>([]);
+const fontApiAvailable = typeof window !== "undefined" && "queryLocalFonts" in window;
+async function detectFonts() {
+  const q = (window as unknown as { queryLocalFonts?: () => Promise<Array<{ family: string }>> })
+    .queryLocalFonts;
+  if (!q) return;
+  try {
+    const data = await q.call(window);
+    installedFonts = [...new Set(data.map((f) => f.family))].sort((a, b) => a.localeCompare(b));
+  } catch {
+    /* permission denied / unavailable — keep the curated suggestions */
+  }
+}
 let themeJson = $state("");
 let themeError = $state("");
 async function importTheme() {
@@ -856,7 +872,7 @@ function onGlobalKey(e: KeyboardEvent) {
       <div class="set-row">
         <label for="set-uifont">UI font</label>
         <div class="set-control">
-          <input id="set-uifont" list="font-suggestions" placeholder="default" value={settings.uiFont} oninput={(e) => settings.setUiFont(e.currentTarget.value)} />
+          <input id="set-uifont" list="ui-fonts" placeholder="default" value={settings.uiFont} oninput={(e) => settings.setUiFont(e.currentTarget.value)} />
         </div>
       </div>
 
@@ -872,7 +888,7 @@ function onGlobalKey(e: KeyboardEvent) {
       <div class="set-row">
         <label for="set-codefont">Code font</label>
         <div class="set-control">
-          <input id="set-codefont" list="font-suggestions" placeholder="default" value={settings.codeFont} oninput={(e) => settings.setCodeFont(e.currentTarget.value)} />
+          <input id="set-codefont" list="mono-fonts" placeholder="default" value={settings.codeFont} oninput={(e) => settings.setCodeFont(e.currentTarget.value)} />
         </div>
       </div>
 
@@ -884,22 +900,50 @@ function onGlobalKey(e: KeyboardEvent) {
         </div>
       </div>
 
-      <datalist id="font-suggestions">
-        <option value="JetBrains Mono"></option>
-        <option value="Fira Code"></option>
-        <option value="Cascadia Code"></option>
-        <option value="SF Mono"></option>
-        <option value="Menlo"></option>
-        <option value="Monaco"></option>
-        <option value="Consolas"></option>
-        <option value="Source Code Pro"></option>
-        <option value="IBM Plex Mono"></option>
-        <option value="system-ui"></option>
-        <option value="Inter"></option>
-        <option value="Helvetica Neue"></option>
+      <!-- UI font suggestions: installed families when detected, else sans/serif. -->
+      <datalist id="ui-fonts">
+        {#if installedFonts.length > 0}
+          {#each installedFonts as f (f)}<option value={f}></option>{/each}
+        {:else}
+          <option value="system-ui"></option>
+          <option value="Inter"></option>
+          <option value="Segoe UI"></option>
+          <option value="Roboto"></option>
+          <option value="Helvetica Neue"></option>
+          <option value="Arial"></option>
+          <option value="ui-sans-serif"></option>
+          <option value="Georgia"></option>
+          <option value="ui-serif"></option>
+          <option value="Times New Roman"></option>
+        {/if}
+      </datalist>
+      <!-- Code font suggestions: installed families when detected, else monospace. -->
+      <datalist id="mono-fonts">
+        {#if installedFonts.length > 0}
+          {#each installedFonts as f (f)}<option value={f}></option>{/each}
+        {:else}
+          <option value="JetBrains Mono"></option>
+          <option value="Fira Code"></option>
+          <option value="Cascadia Code"></option>
+          <option value="SF Mono"></option>
+          <option value="Menlo"></option>
+          <option value="Monaco"></option>
+          <option value="Consolas"></option>
+          <option value="Source Code Pro"></option>
+          <option value="IBM Plex Mono"></option>
+          <option value="Courier New"></option>
+          <option value="ui-monospace"></option>
+        {/if}
       </datalist>
 
-      <p class="set-hint">Fonts use any family installed on your machine.</p>
+      <p class="set-hint">
+        Type any font installed on your machine.
+        {#if fontApiAvailable}
+          <button type="button" class="link-btn" onclick={detectFonts}>
+            {installedFonts.length > 0 ? `${installedFonts.length} installed fonts loaded` : "List my fonts"}
+          </button>
+        {/if}
+      </p>
 
       <div class="modal-actions">
         <button type="button" class="primary" onclick={() => (showSettings = false)}>Done</button>
@@ -1196,6 +1240,16 @@ function onGlobalKey(e: KeyboardEvent) {
   .set-hint {
     color: var(--muted);
     font-size: 11px;
+  }
+  .link-btn {
+    background: none;
+    border: 0;
+    padding: 0;
+    color: var(--accent);
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+    text-decoration: underline;
   }
   .hint {
     color: var(--muted);
