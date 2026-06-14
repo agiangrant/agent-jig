@@ -2,6 +2,7 @@
 import type { GovernorEvent, Session, SessionSummary } from "@governor/contracts";
 import DiffView from "./lib/DiffView.svelte";
 import { GovernorConnection } from "./lib/connection.svelte.ts";
+import { diffMode } from "./lib/diffMode.svelte.ts";
 import { theme } from "./lib/theme.svelte.ts";
 
 void theme.init(); // load custom themes + apply the saved selection's chrome
@@ -304,6 +305,87 @@ function submitAnswers(question: { id: string; questions: { question: string }[]
   for (const qq of question.questions) answers[qq.question] = answerFor(qq.question);
   conn.answerQuestion(question.id, answers);
 }
+
+// --- Command palette (⌘P) ---
+interface Command {
+  id: string;
+  label: string;
+  hint?: string;
+  run: () => void;
+}
+let paletteOpen = $state(false);
+let paletteQuery = $state("");
+let paletteIndex = $state(0);
+
+const commands = $derived<Command[]>([
+  ...theme.available.map((t) => ({
+    id: `theme:${t}`,
+    label: `Theme: ${t}`,
+    hint: t === theme.current ? "current" : undefined,
+    run: () => theme.select(t),
+  })),
+  { id: "diff:split", label: "Diff layout: Side-by-side", run: () => diffMode.set("split") },
+  { id: "diff:unified", label: "Diff layout: Unified", run: () => diffMode.set("unified") },
+  { id: "diff:ba", label: "Diff layout: Before/After", run: () => diffMode.set("ba") },
+  ...(activeId
+    ? [
+        {
+          id: "dial",
+          label: conn.mode === "slowed" ? "Dial: switch to Real-time" : "Dial: switch to Slowed",
+          run: toggle,
+        },
+      ]
+    : []),
+  { id: "new", label: "New session…", run: openNew },
+  { id: "import-theme", label: "Import VSCode theme…", run: () => (showTheme = true) },
+  ...sessions
+    .filter((s) => s.id !== activeId)
+    .map((s) => ({
+      id: `go:${s.id}`,
+      label: `Go to: ${s.title ?? s.taskPrompt}`,
+      run: () => select(s.id),
+    })),
+]);
+const filtered = $derived(
+  paletteQuery.trim() === ""
+    ? commands
+    : commands.filter((c) => c.label.toLowerCase().includes(paletteQuery.toLowerCase())),
+);
+
+function openPalette() {
+  paletteOpen = true;
+  paletteQuery = "";
+  paletteIndex = 0;
+}
+function runCommand(c: Command) {
+  paletteOpen = false;
+  c.run();
+}
+function paletteKey(e: KeyboardEvent) {
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    paletteIndex = Math.min(paletteIndex + 1, filtered.length - 1);
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    paletteIndex = Math.max(paletteIndex - 1, 0);
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    const c = filtered[paletteIndex];
+    if (c) runCommand(c);
+  }
+}
+function onGlobalKey(e: KeyboardEvent) {
+  if ((e.metaKey || e.ctrlKey) && (e.key === "p" || e.key === "k")) {
+    e.preventDefault();
+    openPalette();
+    return;
+  }
+  if (e.key === "Escape") {
+    showNew = false;
+    showTheme = false;
+    paletteOpen = false;
+  }
+}
 </script>
 
 <div
@@ -567,7 +649,39 @@ function submitAnswers(question: { id: string; questions: { question: string }[]
   </main>
 </div>
 
-<svelte:window onkeydown={(e) => { if (e.key === "Escape") { showNew = false; showTheme = false; } }} />
+<svelte:window onkeydown={onGlobalKey} />
+
+{#if paletteOpen}
+  <div class="overlay top">
+    <button class="backdrop" aria-label="Close" onclick={() => (paletteOpen = false)}></button>
+    <div class="palette" role="dialog" aria-modal="true">
+      <input
+        class="palette-input"
+        placeholder="Type a command — theme, diff layout, session…"
+        bind:value={paletteQuery}
+        oninput={() => (paletteIndex = 0)}
+        onkeydown={paletteKey}
+        use:focusOnMount
+      />
+      <ul class="palette-list">
+        {#each filtered as c, i (c.id)}
+          <li>
+            <button
+              class="palette-item"
+              class:sel={i === paletteIndex}
+              onmouseenter={() => (paletteIndex = i)}
+              onclick={() => runCommand(c)}
+            >
+              <span>{c.label}</span>
+              {#if c.hint}<span class="palette-hint">{c.hint}</span>{/if}
+            </button>
+          </li>
+        {/each}
+        {#if filtered.length === 0}<li class="palette-empty">No matching commands</li>{/if}
+      </ul>
+    </div>
+  </div>
+{/if}
 
 {#if showNew}
   <div class="overlay">
@@ -1350,6 +1464,67 @@ function submitAnswers(question: { id: string; questions: { question: string }[]
     justify-content: center;
     padding: 24px;
     z-index: 50;
+  }
+  .overlay.top {
+    align-items: flex-start;
+    padding-top: 12vh;
+  }
+  .palette {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    max-width: 560px;
+    background: var(--bg, #0c0d12);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+  }
+  .palette-input {
+    width: 100%;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    background: transparent;
+    color: var(--fg);
+    font: inherit;
+    padding: 14px 16px;
+    outline: none;
+  }
+  .palette-list {
+    list-style: none;
+    margin: 0;
+    padding: 4px;
+    max-height: 50vh;
+    overflow-y: auto;
+  }
+  .palette-item {
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: 0;
+    border-radius: 6px;
+    color: var(--fg);
+    font: inherit;
+    padding: 9px 12px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+  }
+  .palette-item.sel {
+    background: var(--panel);
+  }
+  .palette-hint {
+    color: var(--muted);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .palette-empty {
+    color: var(--muted);
+    font-style: italic;
+    padding: 12px;
   }
   .backdrop {
     position: absolute;
