@@ -4,6 +4,7 @@ import type {
   DialMode,
   GovernorEvent,
   PendingEdit,
+  PendingPlan,
   PendingQuestion,
   ServerToClient,
   Session,
@@ -19,6 +20,8 @@ export class GovernorConnection {
   changeView = $state<ChangeView>([]);
   /** The agent's open question, if it's waiting on the human. */
   question = $state<PendingQuestion | null>(null);
+  /** The agent's plan awaiting approval, if any. */
+  plan = $state<PendingPlan | null>(null);
   /** Live cross-session tab summary (attention badges), pushed by the server. */
   summary = $state<SessionSummary[] | null>(null);
   /** One unified human↔system conversation: questions, sidecar replies, and steers. */
@@ -36,6 +39,7 @@ export class GovernorConnection {
     this.events = [];
     this.changeView = [];
     this.question = null;
+    this.plan = null;
     this.summary = null;
     this.conversation = [];
     this.connected = false;
@@ -84,6 +88,9 @@ export class GovernorConnection {
       case "question_state":
         this.question = msg.question;
         break;
+      case "plan_state":
+        this.plan = msg.plan;
+        break;
       case "sessions_summary":
         this.summary = msg.sessions;
         break;
@@ -125,5 +132,11 @@ export class GovernorConnection {
   answerQuestion(questionId: string, answers: Record<string, string>): void {
     this.#send({ type: "answer_question", questionId, answers });
     this.question = null;
+  }
+
+  /** Approve the agent's plan (it starts executing) or request changes. */
+  decidePlan(planId: string, approved: boolean, reason = ""): void {
+    this.#send({ type: "decide_plan", planId, approved, reason });
+    this.plan = null;
   }
 }

@@ -12,7 +12,7 @@ and the steering channel are all *views over that log*. Don't invent parallel st
 
 ## Hard architectural facts (verified against the Agent SDK)
 
-- A session can start in **plan mode** (New Session modal / `planMode`): the agent plans and tools don't execute — wired to the SDK's `permissionMode: "plan"` in `runGovernedSession`, persisted (`sessions.plan_mode`) so a resumed session keeps it.
+- A session can start in **plan mode** (New Session modal / `planMode`): the agent plans and tools don't execute — wired to the SDK's `permissionMode: "plan"` in `runGovernedSession`, persisted (`sessions.plan_mode`) so a resumed session keeps it. When the agent finishes planning it calls **`ExitPlanMode`**; the gate intercepts it (like AskUserQuestion) and surfaces a plan-approval card. **Approve** → the gate allows the tool *and* `running.setPermissionMode("default")` so execution proceeds, still paced by the dial; **Request changes** → deny-with-feedback so the agent revises. (`plan_state`/`decide_plan` messages; `awaitingPlan` tab badge.)
 
 The whole session runs in **one Node process**: Hono+ws server + the hosted `query()` session +
   SQLite. The pacing semaphore (`Pacer` in `@governor/core`) is therefore plain in-memory — **no IPC**.

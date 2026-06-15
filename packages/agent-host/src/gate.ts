@@ -19,10 +19,14 @@ export interface GateDeps {
   tracker?: ProvenanceTracker;
   /** Presents an `AskUserQuestion` to the human; resolves to the answer text. */
   askQuestion?: (input: Record<string, unknown>) => Promise<string>;
+  /** Presents an `ExitPlanMode` plan; resolves with the human's decision. */
+  reviewPlan?: (input: Record<string, unknown>) => Promise<{ approved: boolean; message?: string }>;
 }
 
 /** The agent's built-in "ask the human" tool. */
 const ASK_USER_QUESTION = "AskUserQuestion";
+/** The agent's built-in "I'm done planning — approve to execute?" tool. */
+const EXIT_PLAN_MODE = "ExitPlanMode";
 
 /**
  * Edit tools give us snippets, not line numbers. At gate time the file still
@@ -70,7 +74,7 @@ function withLineNumbers(
  * else is logged and allowed at once.
  */
 export function makeCanUseTool(deps: GateDeps): CanUseTool {
-  const { sessionId, pacer, store, onEvent, tracker, askQuestion, cwd } = deps;
+  const { sessionId, pacer, store, onEvent, tracker, askQuestion, reviewPlan, cwd } = deps;
   const config = store.getConfig();
 
   return async (toolName, input) => {
@@ -89,6 +93,7 @@ export function makeCanUseTool(deps: GateDeps): CanUseTool {
 
     const write = isWriteClass(toolName);
     const isQuestion = toolName === ASK_USER_QUESTION && askQuestion !== undefined;
+    const isPlan = toolName === EXIT_PLAN_MODE && reviewPlan !== undefined;
     const path = extractPath(input);
     const assessment = path ? scoreRisk(path, config.riskRules, config.defaultMode) : null;
     const risk = assessment?.risk ?? null;
@@ -101,10 +106,27 @@ export function makeCanUseTool(deps: GateDeps): CanUseTool {
       toolName,
       editId,
       risk,
-      gateState: write ? (willGate ? "pending" : "open") : isQuestion ? "pending" : "open",
+      gateState: write
+        ? willGate
+          ? "pending"
+          : "open"
+        : isQuestion || isPlan
+          ? "pending"
+          : "open",
       payload: write ? withLineNumbers(cwd, toolName, input) : input,
     });
     onEvent?.(call);
+
+    // ExitPlanMode: the agent finished planning. Surface the plan; approving
+    // lets it execute, requesting changes denies with feedback so it revises.
+    if (isPlan && reviewPlan) {
+      const decision = await reviewPlan(input);
+      store.setEventGateState(call.id, "open");
+      onEvent?.({ ...call, gateState: "open" });
+      return decision.approved
+        ? { behavior: "allow", updatedInput: input }
+        : { behavior: "deny", message: decision.message || "Please revise the plan." };
+    }
 
     // AskUserQuestion: block on the human, then hand the answer back as the deny
     // message. canUseTool can't return a tool result, and *allowing* it would make

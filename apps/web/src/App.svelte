@@ -446,6 +446,19 @@ function submitAnswers(question: { id: string; questions: { question: string }[]
   conn.answerQuestion(question.id, answers);
 }
 
+// --- Plan approval (ExitPlanMode) ---
+let planReason = $state("");
+function approvePlan(id: string) {
+  conn.decidePlan(id, true);
+  planReason = "";
+}
+function requestPlanChanges(id: string) {
+  const r = planReason.trim();
+  if (!r) return;
+  conn.decidePlan(id, false, r);
+  planReason = "";
+}
+
 // --- Command palette (⌘K / ⌘P) ---
 interface Command {
   id: string;
@@ -631,7 +644,9 @@ function onGlobalKey(e: KeyboardEvent) {
             <span class="t-task">{s.title ?? s.taskPrompt}</span>
             <span class="t-status {s.status}">{s.status}</span>
           </button>
-          {#if s.awaitingQuestion}
+          {#if s.awaitingPlan}
+            <span class="t-badge plan" title="Plan awaiting approval">plan</span>
+          {:else if s.awaitingQuestion}
             <span class="t-badge ask" title="Waiting for your answer">?</span>
           {:else if s.pendingEdits > 0}
             <span class="t-badge" title="{s.pendingEdits} edit{s.pendingEdits > 1 ? 's' : ''} awaiting review">
@@ -689,6 +704,26 @@ function onGlobalKey(e: KeyboardEvent) {
 
       <div class="cols" class:dragging={chatDragging}>
         <section class="left">
+          {#if conn.plan}
+            {@const pl = conn.plan}
+            <section class="plan">
+              <h2 class="plan-title">The agent has a plan — approve to start editing</h2>
+              <pre class="plan-body">{pl.plan}</pre>
+              <textarea
+                class="plan-reason"
+                rows="2"
+                bind:value={planReason}
+                placeholder="Request changes (feedback for the agent)…"
+              ></textarea>
+              <div class="plan-actions">
+                <button class="plan-changes" disabled={!planReason.trim()} onclick={() => requestPlanChanges(pl.id)}>
+                  Request changes
+                </button>
+                <button class="plan-approve" onclick={() => approvePlan(pl.id)}>Approve &amp; execute</button>
+              </div>
+            </section>
+          {/if}
+
           {#if conn.question}
             {@const aq = conn.question}
             <section class="question">
@@ -1250,6 +1285,11 @@ function onGlobalKey(e: KeyboardEvent) {
     background: var(--warn);
     color: var(--on-warn);
   }
+  .t-badge.plan {
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-size: 9px;
+  }
   .tab-close {
     background: transparent;
     border: 0;
@@ -1604,6 +1644,74 @@ function onGlobalKey(e: KeyboardEvent) {
     list-style: none;
     margin: 0;
     padding: 0;
+  }
+
+  /* --- Agent plan (ExitPlanMode) --- */
+  .plan {
+    border: 1px solid var(--accent);
+    border-radius: 10px;
+    padding: 14px 16px;
+    margin: 8px 0 14px;
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
+  .plan-title {
+    margin: 0 0 10px;
+    color: var(--accent);
+  }
+  .plan-body {
+    margin: 0;
+    max-height: 40vh;
+    overflow: auto;
+    white-space: pre-wrap;
+    font-family: var(--code-font);
+    font-size: var(--code-font-size);
+    line-height: 1.5;
+    color: var(--fg);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 10px 12px;
+  }
+  .plan-reason {
+    width: 100%;
+    margin-top: 10px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 7px 10px;
+    color: var(--fg);
+    font: inherit;
+    resize: vertical;
+    box-sizing: border-box;
+  }
+  .plan-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .plan-changes {
+    background: transparent;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--fg);
+    cursor: pointer;
+    font: inherit;
+    padding: 8px 14px;
+  }
+  .plan-changes:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .plan-approve {
+    background: var(--accent);
+    color: var(--on-accent);
+    border: 0;
+    border-radius: 8px;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 600;
+    padding: 8px 16px;
   }
 
   /* --- Agent question --- */

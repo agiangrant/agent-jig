@@ -103,6 +103,36 @@ describe("makeCanUseTool", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("approves an ExitPlanMode plan — allows the tool", async () => {
+    const pacer = new Pacer("realtime");
+    const gate = makeCanUseTool({
+      sessionId,
+      pacer,
+      store,
+      reviewPlan: async () => ({ approved: true }),
+    });
+
+    const decision = await gate("ExitPlanMode", { plan: "1. do a thing" }, opts);
+
+    expect(decision).toEqual({ behavior: "allow", updatedInput: { plan: "1. do a thing" } });
+    const ev = store.listEvents(sessionId).find((e) => e.type === "tool_call");
+    expect(ev?.gateState).toBe("open"); // resolved — not stuck "pending"
+  });
+
+  it("requesting plan changes denies with the feedback", async () => {
+    const pacer = new Pacer("realtime");
+    const gate = makeCanUseTool({
+      sessionId,
+      pacer,
+      store,
+      reviewPlan: async () => ({ approved: false, message: "split step 2 out" }),
+    });
+
+    const decision = await gate("ExitPlanMode", { plan: "p" }, opts);
+
+    expect(decision).toEqual({ behavior: "deny", message: "split step 2 out" });
+  });
+
   it("lets read-class tools pass immediately and does not enqueue them", async () => {
     const pacer = new Pacer("slowed");
     const gate = makeCanUseTool({ sessionId, pacer, store });

@@ -5,6 +5,7 @@ import type {
   ClientToServer,
   DialMode,
   GovernorEvent,
+  PendingPlan,
   PendingQuestion,
   Question,
   Session,
@@ -41,6 +42,7 @@ export interface GovernedSessionDeps {
 const INERT_RUNNING: RunningSession = {
   result: Promise.resolve(),
   sendDirective: () => {},
+  setPermissionMode: async () => {},
   interrupt: async () => {},
 };
 
@@ -83,6 +85,9 @@ export class GovernedSession {
   /** The agent's open question (if any) and the resolver that answers it. */
   private question: PendingQuestion | null = null;
   private answerQuestion: ((message: string) => void) | null = null;
+  /** The agent's open plan (if any) and the resolver that decides it. */
+  private plan: PendingPlan | null = null;
+  private decidePlan: ((d: { approved: boolean; message?: string }) => void) | null = null;
   /** Set once the human renames the session, so the LLM title won't overwrite it. */
   private titleManual = false;
   private readonly onAttention: (() => void) | undefined;
@@ -127,6 +132,7 @@ export class GovernedSession {
           onEvent,
           queryImpl: deps.queryImpl,
           askQuestion: (input) => this.askHuman(input),
+          reviewPlan: (input) => this.reviewPlan(input),
           resume: deps.resumeClaudeId,
           planMode: deps.planMode,
           onSessionId: (cid) => this.store.setClaudeSessionId(this.id, cid),
@@ -184,6 +190,7 @@ export class GovernedSession {
       ...this.meta(),
       pendingEdits: this.pacer.queue.length,
       awaitingQuestion: this.question !== null,
+      awaitingPlan: this.plan !== null,
     };
   }
 
@@ -197,6 +204,7 @@ export class GovernedSession {
     }
     this.broadcaster.send(ws, { type: "change_view", view: this.changeView() });
     this.broadcaster.send(ws, { type: "question_state", question: this.question });
+    this.broadcaster.send(ws, { type: "plan_state", plan: this.plan });
     this.broadcaster.add(ws);
     this.onAttention?.(); // give the new client the current cross-session summary
   }
@@ -213,6 +221,7 @@ export class GovernedSession {
     else if (msg.type === "send_directive") this.sendDirective(msg.text, msg.anchorEditId);
     else if (msg.type === "sidecar_message") this.askSidecar(msg.text);
     else if (msg.type === "answer_question") this.resolveQuestion(msg.questionId, msg.answers);
+    else if (msg.type === "decide_plan") this.resolvePlan(msg.planId, msg.approved, msg.reason);
   }
 
   /**
@@ -229,6 +238,47 @@ export class GovernedSession {
     return new Promise<string>((resolve) => {
       this.answerQuestion = resolve;
     });
+  }
+
+  /**
+   * The agent called ExitPlanMode. Surface the plan and block until the human
+   * decides: approve (the gate allows the tool and we flip the agent out of plan
+   * mode into `default`, so execution is still paced by the dial) or request
+   * changes (the gate denies with the feedback, so the agent keeps planning).
+   */
+  private reviewPlan(
+    input: Record<string, unknown>,
+  ): Promise<{ approved: boolean; message?: string }> {
+    const plan = typeof input.plan === "string" ? input.plan : "";
+    const pending: PendingPlan = { id: randomUUID(), plan };
+    this.plan = pending;
+    this.broadcaster.broadcast({ type: "plan_state", plan: pending });
+    this.onAttention?.();
+    return new Promise((resolve) => {
+      this.decidePlan = resolve;
+    });
+  }
+
+  private resolvePlan(planId: string, approved: boolean, reason: string): void {
+    if (this.plan === null || this.plan.id !== planId) return;
+    const resolve = this.decidePlan;
+    const note = approved
+      ? "Plan approved — executing."
+      : `Plan changes requested: ${reason || "(no detail)"}`;
+    const event = this.store.appendEvent({
+      sessionId: this.id,
+      type: "directive",
+      payload: { text: note },
+    });
+    this.broadcaster.broadcast({ type: "event", event });
+    this.plan = null;
+    this.decidePlan = null;
+    this.broadcaster.broadcast({ type: "plan_state", plan: null });
+    this.onAttention?.();
+    // On approval, leave plan mode so the agent can act; keep it paced via the gate.
+    const finish = () => resolve?.({ approved, message: reason });
+    if (approved) void this.running.setPermissionMode("default").then(finish, finish);
+    else finish();
   }
 
   private resolveQuestion(questionId: string, answers: Record<string, string>): void {
@@ -250,9 +300,11 @@ export class GovernedSession {
   }
 
   async close(): Promise<void> {
-    // Unblock a pending question so the agent's canUseTool await doesn't hang.
+    // Unblock a pending question/plan so the agent's canUseTool await doesn't hang.
     this.answerQuestion?.("The developer ended the session without answering.");
     this.answerQuestion = null;
+    this.decidePlan?.({ approved: false, message: "The developer ended the session." });
+    this.decidePlan = null;
     await this.running.interrupt().catch(() => {});
     await this.sidecar.close().catch(() => {});
   }

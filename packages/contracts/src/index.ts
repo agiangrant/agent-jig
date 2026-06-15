@@ -37,6 +37,8 @@ export const SessionSummary = Session.extend({
   pendingEdits: z.number().int().default(0),
   /** True if the agent is blocked on an AskUserQuestion. */
   awaitingQuestion: z.boolean().default(false),
+  /** True if the agent is waiting for the human to approve a plan. */
+  awaitingPlan: z.boolean().default(false),
 });
 export type SessionSummary = z.infer<typeof SessionSummary>;
 
@@ -204,6 +206,14 @@ export const PendingQuestion = z.object({
 });
 export type PendingQuestion = z.infer<typeof PendingQuestion>;
 
+/** The agent's `ExitPlanMode` plan, awaiting the human's approve/revise decision. */
+export const PendingPlan = z.object({
+  id: z.string(),
+  /** The plan text (markdown). */
+  plan: z.string(),
+});
+export type PendingPlan = z.infer<typeof PendingPlan>;
+
 export const ServerToClient = z.discriminatedUnion("type", [
   z.object({ type: z.literal("session_state"), session: Session }),
   z.object({ type: z.literal("event"), event: GovernorEvent }),
@@ -212,6 +222,7 @@ export const ServerToClient = z.discriminatedUnion("type", [
   z.object({ type: z.literal("change_view"), view: ChangeView }),
   z.object({ type: z.literal("sidecar_reply"), text: z.string() }),
   z.object({ type: z.literal("question_state"), question: PendingQuestion.nullable() }),
+  z.object({ type: z.literal("plan_state"), plan: PendingPlan.nullable() }),
   // Cross-session: the whole tab list with attention state, pushed live so tabs
   // (incl. inactive ones) update without waiting for the poll.
   z.object({ type: z.literal("sessions_summary"), sessions: z.array(SessionSummary) }),
@@ -233,6 +244,13 @@ export const ClientToServer = z.discriminatedUnion("type", [
     questionId: z.string(),
     /** question text → chosen answer (multi-select comma-joined). */
     answers: z.record(z.string(), z.string()),
+  }),
+  z.object({
+    type: z.literal("decide_plan"),
+    planId: z.string(),
+    approved: z.boolean(),
+    /** Feedback when requesting changes; handed back so the agent revises. */
+    reason: z.string().default(""),
   }),
 ]);
 export type ClientToServer = z.infer<typeof ClientToServer>;

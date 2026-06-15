@@ -28,6 +28,15 @@ export interface RunSessionDeps {
   onSessionId?: (id: string) => void;
   /** Start in plan mode — the agent plans; tools don't execute. */
   planMode?: boolean;
+  /** Presents the agent's `ExitPlanMode` plan; resolves with the human's decision. */
+  reviewPlan?: (input: Record<string, unknown>) => Promise<PlanDecision>;
+}
+
+/** The human's response to a plan: approve (execute) or request changes. */
+export interface PlanDecision {
+  approved: boolean;
+  /** Feedback when not approved — handed back to the agent to revise. */
+  message?: string;
 }
 
 export interface RunningSession {
@@ -35,6 +44,8 @@ export interface RunningSession {
   result: Promise<void>;
   /** Inject a steering directive, applied at the next tool-call boundary. */
   sendDirective(text: string): void;
+  /** Switch the SDK permission mode (e.g. plan → default after plan approval). */
+  setPermissionMode(mode: string): Promise<void>;
   interrupt(): Promise<void>;
 }
 
@@ -54,6 +65,7 @@ export function runGovernedSession(deps: RunSessionDeps): RunningSession {
     onEvent,
     tracker,
     askQuestion: deps.askQuestion,
+    reviewPlan: deps.reviewPlan,
     cwd: session.repoPath,
   });
 
@@ -141,6 +153,9 @@ export function runGovernedSession(deps: RunSessionDeps): RunningSession {
     sendDirective: (text: string) => {
       expectedResults += 1;
       input.push(text);
+    },
+    setPermissionMode: async (mode: string) => {
+      await runner.setPermissionMode(mode as Parameters<typeof runner.setPermissionMode>[0]);
     },
     interrupt: async () => {
       input.end();
