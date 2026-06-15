@@ -52,6 +52,64 @@ let sidebarOpen = $state(true);
 // (the header grows when the prompt accordion is expanded).
 let headerH = $state(0);
 
+// --- Resizable / collapsible conversation column ---
+const CHAT_W_KEY = "governor:chatWidth";
+const CHAT_OPEN_KEY = "governor:chatOpen";
+const CHAT_MIN = 260;
+const CHAT_MAX = 680;
+function loadChatWidth(): number {
+  try {
+    const n = Number(localStorage.getItem(CHAT_W_KEY));
+    return Number.isFinite(n) && n > 0 ? Math.min(CHAT_MAX, Math.max(CHAT_MIN, n)) : 360;
+  } catch {
+    return 360;
+  }
+}
+function loadChatOpen(): boolean {
+  try {
+    return localStorage.getItem(CHAT_OPEN_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+let chatWidth = $state(loadChatWidth());
+let chatOpen = $state(loadChatOpen());
+let chatDragging = $state(false);
+let chatDragX = 0;
+let chatDragW = 0;
+function setChatOpen(v: boolean) {
+  chatOpen = v;
+  try {
+    localStorage.setItem(CHAT_OPEN_KEY, v ? "1" : "0");
+  } catch {
+    /* storage unavailable */
+  }
+}
+function chatDragStart(e: PointerEvent) {
+  chatDragging = true;
+  chatDragX = e.clientX;
+  chatDragW = chatWidth;
+  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+}
+function chatDragMove(e: PointerEvent) {
+  if (!chatDragging) return;
+  // Dragging left widens the chat (it's on the right).
+  chatWidth = Math.min(CHAT_MAX, Math.max(CHAT_MIN, chatDragW - (e.clientX - chatDragX)));
+}
+function chatDragEnd() {
+  if (!chatDragging) return;
+  chatDragging = false;
+  try {
+    localStorage.setItem(CHAT_W_KEY, String(chatWidth));
+  } catch {
+    /* storage unavailable */
+  }
+}
+function chatDragKey(e: KeyboardEvent) {
+  if (e.key === "ArrowLeft") chatWidth = Math.min(CHAT_MAX, chatWidth + 16);
+  else if (e.key === "ArrowRight") chatWidth = Math.max(CHAT_MIN, chatWidth - 16);
+}
+
 // Remember the active session across refreshes/restarts (URL hash wins, then storage).
 const ACTIVE_KEY = "governor:activeSession";
 function savedActiveId(): string | null {
@@ -629,7 +687,7 @@ function onGlobalKey(e: KeyboardEvent) {
         {/if}
       </header>
 
-      <div class="cols">
+      <div class="cols" class:dragging={chatDragging}>
         <section class="left">
           {#if conn.question}
             {@const aq = conn.question}
@@ -766,8 +824,26 @@ function onGlobalKey(e: KeyboardEvent) {
           </details>
         </section>
 
-        <aside class="right" style="top: {headerH + 12}px">
-          <h2>Conversation</h2>
+        {#if chatOpen}
+          <button
+            class="cdivider"
+            class:dragging={chatDragging}
+            aria-label="Resize conversation"
+            style="top: {headerH + 12}px; height: calc(100dvh - {headerH + 24}px)"
+            onpointerdown={chatDragStart}
+            onpointermove={chatDragMove}
+            onpointerup={chatDragEnd}
+            onkeydown={chatDragKey}
+          ></button>
+          <aside
+            class="right"
+            class:dragging={chatDragging}
+            style="top: {headerH + 12}px; width: {chatWidth}px"
+          >
+          <div class="chat-head">
+            <h2>Conversation</h2>
+            <button class="icon" title="Collapse conversation" onclick={() => setChatOpen(false)}>›</button>
+          </div>
           <div class="chat">
             {#if conn.conversation.length === 0}
               <p class="empty">Ask about provenance, or steer the agent.</p>
@@ -787,7 +863,15 @@ function onGlobalKey(e: KeyboardEvent) {
               <button type="submit" class="steer">Steer</button>
             </div>
           </form>
-        </aside>
+          </aside>
+        {:else}
+          <button
+            class="chat-reveal"
+            style="top: {headerH + 12}px"
+            title="Show conversation"
+            onclick={() => setChatOpen(true)}
+          >‹ Chat</button>
+        {/if}
       </div>
     {/if}
   </main>
@@ -1427,15 +1511,78 @@ function onGlobalKey(e: KeyboardEvent) {
     color: var(--warn);
   }
   .cols {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 360px;
-    gap: 28px;
-    align-items: start;
+    display: flex;
+    align-items: flex-start;
+  }
+  .cols.dragging {
+    user-select: none;
+    cursor: col-resize;
+  }
+  .left {
+    flex: 1;
+    min-width: 0;
   }
   .right {
+    flex-shrink: 0;
+    min-width: 0;
+    padding-left: 16px;
     position: sticky;
-    /* `top` is set inline from the measured header height so an expanded
-       prompt never covers the conversation. */
+    /* `top` and `width` are inline (measured header height + resizable width). */
+  }
+  /* Draggable divider between the diff area and the conversation. */
+  .cdivider {
+    flex-shrink: 0;
+    width: 11px;
+    align-self: stretch;
+    position: sticky;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    cursor: col-resize;
+    z-index: 5;
+  }
+  .cdivider::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    background: var(--line);
+    transform: translateX(-50%);
+    transition: background 0.15s, width 0.15s;
+  }
+  .cdivider:hover::after,
+  .cdivider:focus-visible::after,
+  .cdivider.dragging::after {
+    background: var(--accent);
+    width: 3px;
+  }
+  .cdivider:focus {
+    outline: none;
+  }
+  .chat-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .chat-reveal {
+    flex-shrink: 0;
+    position: sticky;
+    align-self: flex-start;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    color: var(--muted);
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+    padding: 8px 6px;
+    writing-mode: vertical-rl;
+  }
+  .chat-reveal:hover {
+    color: var(--fg);
+    border-color: var(--accent);
   }
 
   h2 {
