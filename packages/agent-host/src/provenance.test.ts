@@ -1,4 +1,4 @@
-import type { DetectedChange } from "@governor/worktree";
+import type { DetectedChange } from "@agent-jig/worktree";
 import { describe, expect, it } from "vitest";
 import { ProvenanceTracker } from "./provenance.ts";
 

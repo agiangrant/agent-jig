@@ -1,8 +1,8 @@
-import { Pacer } from "@governor/core";
-import { SqliteStorage } from "@governor/store";
+import { Pacer } from "@agent-jig/core";
+import { SqliteStorage } from "@agent-jig/store";
 import { describe, expect, it } from "vitest";
 import type { RunSessionDeps } from "./session.ts";
-import { runGovernedSession } from "./session.ts";
+import { runJigSession } from "./session.ts";
 
 // A query() stand-in that yields a fixed message stream and then completes.
 function fakeQuery(messages: unknown[]): RunSessionDeps["queryImpl"] {
@@ -18,7 +18,7 @@ function fakeQuery(messages: unknown[]): RunSessionDeps["queryImpl"] {
   }) as unknown as RunSessionDeps["queryImpl"];
 }
 
-describe("runGovernedSession", () => {
+describe("runJigSession", () => {
   it("captures assistant reasoning text as reasoning events", async () => {
     const store = new SqliteStorage(":memory:");
     const session = store.createSession({ repoPath: "/r", taskPrompt: "t" });
@@ -36,7 +36,7 @@ describe("runGovernedSession", () => {
       { type: "result", subtype: "success" },
     ];
 
-    const running = runGovernedSession({
+    const running = runJigSession({
       session,
       prompt: "t",
       pacer: new Pacer("realtime"),
@@ -71,7 +71,7 @@ describe("runGovernedSession", () => {
     }) as unknown as RunSessionDeps["queryImpl"];
 
     const seen: string[] = [];
-    const running = runGovernedSession({
+    const running = runJigSession({
       session,
       prompt: "original task",
       pacer: new Pacer("realtime"),
@@ -101,7 +101,7 @@ describe("runGovernedSession", () => {
       });
     }) as unknown as RunSessionDeps["queryImpl"];
 
-    const running = runGovernedSession({
+    const running = runJigSession({
       session,
       prompt: "t",
       pacer: new Pacer("realtime"),

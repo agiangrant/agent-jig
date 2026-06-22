@@ -1,4 +1,4 @@
-import type { GovernorEvent, IntentGroup } from "@governor/contracts";
+import type { IntentGroup, JigEvent } from "@agent-jig/contracts";
 import { isWriteClass } from "./tools.ts";
 
 /** An intent group plus the full reasoning behind it, for server-side summarization. */
@@ -17,7 +17,7 @@ export interface IntentGroupRaw extends IntentGroup {
  * `label` is a concise heuristic gist; `reason` carries the full text so the
  * server can replace the label with a crisp LLM-generated summary.
  */
-export function groupByIntent(events: readonly GovernorEvent[]): IntentGroupRaw[] {
+export function groupByIntent(events: readonly JigEvent[]): IntentGroupRaw[] {
   // Reduce to the tokens that matter: reasoning, write-class edits, and steering
   // directives. A reasoning that immediately follows a directive is the agent's
   // *reply to the steer* ("Noted — I'll keep comments minimal…"), not fresh

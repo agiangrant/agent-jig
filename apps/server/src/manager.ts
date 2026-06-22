@@ -1,11 +1,11 @@
 import { resolve } from "node:path";
-import type { RunSessionDeps } from "@governor/agent-host";
-import type { DialMode, Session, SessionSummary } from "@governor/contracts";
-import type { Narrator } from "@governor/narrator";
-import type { Storage } from "@governor/store";
-import type { StructuralAnalyzer } from "@governor/structural";
-import { createWorktree } from "@governor/worktree";
-import { GovernedSession } from "./governed-session.ts";
+import type { RunSessionDeps } from "@agent-jig/agent-host";
+import type { DialMode, Session, SessionSummary } from "@agent-jig/contracts";
+import type { Narrator } from "@agent-jig/narrator";
+import type { Storage } from "@agent-jig/store";
+import type { StructuralAnalyzer } from "@agent-jig/structural";
+import { createWorktree } from "@agent-jig/worktree";
+import { JigSession } from "./jig-session.ts";
 
 export interface ManagerDeps {
   store: Storage;
@@ -29,7 +29,7 @@ const RESUME_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 /** Hosts many governed sessions over one shared store/analyzer/narrator. */
 export class SessionManager {
-  private readonly sessions = new Map<string, GovernedSession>();
+  private readonly sessions = new Map<string, JigSession>();
 
   constructor(private readonly deps: ManagerDeps) {}
 
@@ -46,7 +46,7 @@ export class SessionManager {
     }
   }
 
-  private rehydrate(session: Session, now: number): GovernedSession | null {
+  private rehydrate(session: Session, now: number): JigSession | null {
     const claudeId = this.deps.store.getClaudeSessionId(session.id);
     const events = this.deps.store.listEvents(session.id);
     const lastTs = events.at(-1)?.ts ?? session.startedAt;
@@ -55,7 +55,7 @@ export class SessionManager {
 
     if (resumable) {
       try {
-        return new GovernedSession({
+        return new JigSession({
           session,
           store: this.deps.store,
           analyzer: this.deps.analyzer,
@@ -74,7 +74,7 @@ export class SessionManager {
     // session that can't resume is marked paused so it isn't retried every boot.
     if (session.status === "running") this.deps.store.setSessionStatus(session.id, "paused");
     try {
-      return new GovernedSession({
+      return new JigSession({
         session: this.deps.store.getSession(session.id) ?? session,
         store: this.deps.store,
         analyzer: this.deps.analyzer,
@@ -99,7 +99,7 @@ export class SessionManager {
       taskPrompt: input.prompt,
       planMode: input.planMode,
     });
-    const gs = new GovernedSession({
+    const gs = new JigSession({
       session,
       mode: input.mode,
       store: this.deps.store,
@@ -124,7 +124,7 @@ export class SessionManager {
     return [...this.sessions.values()].map((s) => s.summary());
   }
 
-  get(id: string): GovernedSession | undefined {
+  get(id: string): JigSession | undefined {
     return this.sessions.get(id);
   }
 

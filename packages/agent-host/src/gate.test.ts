@@ -1,8 +1,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Pacer } from "@governor/core";
-import { SqliteStorage } from "@governor/store";
+import { Pacer } from "@agent-jig/core";
+import { SqliteStorage } from "@agent-jig/store";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { makeCanUseTool } from "./gate.ts";
 
@@ -101,6 +101,36 @@ describe("makeCanUseTool", () => {
     const ev = store.listEvents(sessionId).find((e) => e.type === "tool_call");
     expect((ev?.payload as { startLine?: number }).startLine).toBe(3);
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("auto-downshifts: a high-risk path gates even in realtime", async () => {
+    const pacer = new Pacer("realtime");
+    const gate = makeCanUseTool({ sessionId, pacer, store });
+
+    const decision = gate("Edit", { file_path: "src/auth/login.ts" }, opts);
+    await tick();
+
+    // Held despite realtime — an explicit risk rule (auth) forces the gate.
+    expect(pacer.queue).toHaveLength(1);
+    expect(store.listEvents(sessionId)[0]?.gateState).toBe("pending");
+
+    pacer.ack(pacer.queue[0]?.editId ?? "");
+    await expect(decision).resolves.toEqual({
+      behavior: "allow",
+      updatedInput: { file_path: "src/auth/login.ts" },
+    });
+  });
+
+  it("does not auto-downshift an ordinary path in realtime", async () => {
+    const pacer = new Pacer("realtime");
+    const gate = makeCanUseTool({ sessionId, pacer, store });
+
+    // No matching risk rule → falls back to the global (realtime) mode, passes through.
+    await expect(gate("Edit", { file_path: "src/util/x.ts" }, opts)).resolves.toEqual({
+      behavior: "allow",
+      updatedInput: { file_path: "src/util/x.ts" },
+    });
+    expect(pacer.queue).toEqual([]);
   });
 
   it("approves an ExitPlanMode plan — allows the tool", async () => {

@@ -1,11 +1,11 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ServerToClient } from "@governor/contracts";
+import type { ServerToClient } from "@agent-jig/contracts";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 import type { RunningServer, ServerOptions } from "./server.ts";
-import { startGovernorServer } from "./server.ts";
+import { startJigServer } from "./server.ts";
 
 // A query() stand-in that drives no tools and finishes immediately.
 function fakeQuery(): unknown {
@@ -36,9 +36,9 @@ afterEach(async () => {
   await server.close();
 });
 
-describe("startGovernorServer", () => {
+describe("startJigServer", () => {
   it("snapshots a session to a new client and round-trips a dial change", async () => {
-    server = await startGovernorServer({ port: 0, dbPath: ":memory:", queryImpl });
+    server = await startJigServer({ port: 0, dbPath: ":memory:", queryImpl });
     const session = server.createSession({ repoPath: tmpdir(), prompt: "t", mode: "slowed" });
 
     const got: ServerToClient[] = [];
@@ -61,7 +61,7 @@ describe("startGovernorServer", () => {
   });
 
   it("rejects a websocket from a foreign origin (CSWSH guard)", async () => {
-    server = await startGovernorServer({ port: 0, dbPath: ":memory:", queryImpl });
+    server = await startJigServer({ port: 0, dbPath: ":memory:", queryImpl });
     const session = server.createSession({ repoPath: tmpdir(), prompt: "t" });
     const ws = new WebSocket(wsUrl(server, session.id), { origin: "http://evil.example" });
     const outcome = await new Promise<"open" | "rejected">((res) => {
@@ -73,8 +73,21 @@ describe("startGovernorServer", () => {
     ws.close();
   });
 
+  it("accepts a websocket from the Tauri desktop origin", async () => {
+    server = await startJigServer({ port: 0, dbPath: ":memory:", queryImpl });
+    const session = server.createSession({ repoPath: tmpdir(), prompt: "t" });
+    const ws = new WebSocket(wsUrl(server, session.id), { origin: "tauri://localhost" });
+    const outcome = await new Promise<"open" | "rejected">((res) => {
+      ws.on("open", () => res("open"));
+      ws.on("error", () => res("rejected"));
+      ws.on("unexpected-response", () => res("rejected"));
+    });
+    expect(outcome).toBe("open");
+    ws.close();
+  });
+
   it("creates and lists sessions over HTTP", async () => {
-    server = await startGovernorServer({ port: 0, dbPath: ":memory:", queryImpl });
+    server = await startJigServer({ port: 0, dbPath: ":memory:", queryImpl });
     const res = await fetch(`${server.url}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -89,7 +102,7 @@ describe("startGovernorServer", () => {
   });
 
   it("returns the picked folder from the native chooser", async () => {
-    server = await startGovernorServer({
+    server = await startJigServer({
       port: 0,
       dbPath: ":memory:",
       queryImpl,
@@ -101,7 +114,7 @@ describe("startGovernorServer", () => {
   });
 
   it("returns 400 when the folder pick is cancelled", async () => {
-    server = await startGovernorServer({
+    server = await startJigServer({
       port: 0,
       dbPath: ":memory:",
       queryImpl,
@@ -114,7 +127,7 @@ describe("startGovernorServer", () => {
   it("rehydrates sessions from the store across a server restart", async () => {
     const dbPath = join(mkdtempSync(join(tmpdir(), "gov-db-")), "g.db");
 
-    const first = await startGovernorServer({ port: 0, dbPath, queryImpl });
+    const first = await startJigServer({ port: 0, dbPath, queryImpl });
     const created = (await (
       await fetch(`${first.url}/sessions`, {
         method: "POST",
@@ -125,7 +138,7 @@ describe("startGovernorServer", () => {
     await first.close();
 
     // A fresh process (new manager, empty in-memory map) on the same DB file.
-    server = await startGovernorServer({ port: 0, dbPath, queryImpl });
+    server = await startJigServer({ port: 0, dbPath, queryImpl });
     const list = (await (await fetch(`${server.url}/sessions`)).json()) as {
       id: string;
       taskPrompt: string;
@@ -135,7 +148,7 @@ describe("startGovernorServer", () => {
   });
 
   it("pushes a live sessions_summary to connected clients", async () => {
-    server = await startGovernorServer({ port: 0, dbPath: ":memory:", queryImpl });
+    server = await startJigServer({ port: 0, dbPath: ":memory:", queryImpl });
     const session = server.createSession({ repoPath: tmpdir(), prompt: "t" });
 
     const got: ServerToClient[] = [];
@@ -156,7 +169,7 @@ describe("startGovernorServer", () => {
   });
 
   it("renames and closes a session over HTTP", async () => {
-    server = await startGovernorServer({ port: 0, dbPath: ":memory:", queryImpl });
+    server = await startJigServer({ port: 0, dbPath: ":memory:", queryImpl });
     const created = (await (
       await fetch(`${server.url}/sessions`, {
         method: "POST",
@@ -184,7 +197,7 @@ describe("startGovernorServer", () => {
   });
 
   it("rejects a cross-origin POST /sessions (CSRF→RCE guard)", async () => {
-    server = await startGovernorServer({ port: 0, dbPath: ":memory:", queryImpl });
+    server = await startJigServer({ port: 0, dbPath: ":memory:", queryImpl });
     const res = await fetch(`${server.url}/sessions`, {
       method: "POST",
       headers: { "content-type": "application/json", origin: "http://evil.example" },
@@ -193,5 +206,71 @@ describe("startGovernorServer", () => {
     expect(res.status).toBe(403);
     const list = (await (await fetch(`${server.url}/sessions`)).json()) as unknown[];
     expect(list.length).toBe(0); // nothing created
+  });
+
+  it("reads and updates the governance config over HTTP", async () => {
+    server = await startJigServer({ port: 0, dbPath: ":memory:", queryImpl });
+    const initial = (await (await fetch(`${server.url}/config`)).json()) as {
+      defaultMode: string;
+      riskRules: unknown[];
+    };
+    expect(initial.defaultMode).toBe("slowed");
+    expect(initial.riskRules.length).toBeGreaterThan(0);
+
+    const next = {
+      defaultMode: "realtime",
+      gateTimeoutMs: 5 * 60 * 1000,
+      riskRules: [{ id: "secrets", glob: "**/secrets/**", defaultMode: "slowed", risk: 0.99 }],
+    };
+    const put = await fetch(`${server.url}/config`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(next),
+    });
+    expect(put.status).toBe(200);
+
+    const saved = (await (await fetch(`${server.url}/config`)).json()) as typeof next;
+    expect(saved.defaultMode).toBe("realtime");
+    expect(saved.gateTimeoutMs).toBe(5 * 60 * 1000);
+    expect(saved.riskRules).toHaveLength(1);
+    expect(saved.riskRules[0]?.glob).toBe("**/secrets/**");
+  });
+
+  it("serves a worktree file slice over HTTP and rejects traversal", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "gov-srv-file-"));
+    writeFileSync(join(dir, "a.ts"), "one\ntwo\nthree\nfour");
+    server = await startJigServer({ port: 0, dbPath: ":memory:", queryImpl });
+    const session = server.createSession({ repoPath: dir, prompt: "t" });
+
+    const slice = await fetch(`${server.url}/sessions/${session.id}/file?path=a.ts&from=2&to=3`);
+    expect(slice.status).toBe(200);
+    expect(slice.headers.get("content-type")).toContain("application/json");
+    expect((await slice.json()) as unknown).toMatchObject({
+      totalLines: 4,
+      from: 2,
+      to: 3,
+      lines: ["two", "three"],
+    });
+
+    const full = await fetch(`${server.url}/sessions/${session.id}/file?path=a.ts&full=1`);
+    expect(((await full.json()) as { lines: string[] }).lines).toHaveLength(4);
+
+    const evil = await fetch(
+      `${server.url}/sessions/${session.id}/file?path=${encodeURIComponent("../../etc/passwd")}`,
+    );
+    expect(evil.status).toBe(400);
+
+    const missing = await fetch(`${server.url}/sessions/nope/file?path=a.ts`);
+    expect(missing.status).toBe(404);
+  });
+
+  it("rejects an invalid governance config", async () => {
+    server = await startJigServer({ port: 0, dbPath: ":memory:", queryImpl });
+    const res = await fetch(`${server.url}/config`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ defaultMode: "warp-speed" }),
+    });
+    expect(res.status).toBe(400);
   });
 });

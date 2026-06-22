@@ -1,0 +1,15 @@
+{
+  "name": "@agent-jig/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "bundle:sidecar": "node scripts/bundle-sidecar.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.0",
+    "esbuild": "^0.25.0"
+  }
+}

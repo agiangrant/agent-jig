@@ -1,5 +1,5 @@
 {
-  "name": "@governor/server",
+  "name": "@agent-jig/server",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -10,14 +10,15 @@
     "dev": "tsx watch src/dev.ts"
   },
   "dependencies": {
-    "@governor/agent-host": "workspace:*",
-    "@governor/contracts": "workspace:*",
-    "@governor/core": "workspace:*",
-    "@governor/narrator": "workspace:*",
-    "@governor/sidecar": "workspace:*",
-    "@governor/store": "workspace:*",
-    "@governor/structural": "workspace:*",
-    "@governor/worktree": "workspace:*",
+    "@agent-jig/agent-host": "workspace:*",
+    "@agent-jig/codegraph": "workspace:*",
+    "@agent-jig/contracts": "workspace:*",
+    "@agent-jig/core": "workspace:*",
+    "@agent-jig/narrator": "workspace:*",
+    "@agent-jig/sidecar": "workspace:*",
+    "@agent-jig/store": "workspace:*",
+    "@agent-jig/structural": "workspace:*",
+    "@agent-jig/worktree": "workspace:*",
     "@hono/node-server": "^2.0.4",
     "hono": "^4.12.25",
     "ws": "^8.21.0"

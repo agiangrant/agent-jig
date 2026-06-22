@@ -1,0 +1,19 @@
+<!-- Jig app icon source. Regenerate the full platform set by running, from the
+     repo root: pnpm tauri icon (scoped to the desktop package) on this file.
+     The node-graph "J" mark sits on a filled rounded-square tile so it stays
+     legible on dark docks/taskbars. To recolor, change the rect fill (tile)
+     and/or the color/stroke values on the mark group. -->
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background tile -->
+  <rect width="1024" height="1024" rx="224" fill="#ffffff"/>
+  <!-- Mark: original 128-unit artwork, centered with safe-area padding (scale 6, 128px inset) -->
+  <g transform="translate(128 128) scale(6)" color="#000000" fill="none">
+    <path d="M 31.377 27.53 L 55.377 27.53" stroke-width="8" stroke-linecap="round" style="stroke: rgba(0, 0, 0, 0.8);"></path>
+    <path d="M 71.377 27.53 L 95.377 27.53" stroke-width="8" stroke-linecap="round" style="stroke: rgba(0, 0, 0, 0.8);"></path>
+    <path d="M 63.377 39.53 L 63.377 79.53 C 63.377 96.104 56.42 100.234 38.328 100.242" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" style="stroke: rgba(0, 0, 0, 0.8);"></path>
+    <circle cx="23.377" cy="27.53" r="12" fill="currentColor" style="stroke: rgba(0, 0, 0, 0.8);"></circle>
+    <circle cx="103.377" cy="27.53" r="12" fill="currentColor" style="stroke: rgba(0, 0, 0, 0.8);"></circle>
+    <circle cx="30.638" cy="100.133" r="12" style="stroke: rgb(1, 1, 1); fill: rgba(253, 253, 253, 0.8);"></circle>
+    <rect x="51.377" y="15.53" width="24" height="24" rx="6" fill="currentColor" style="stroke: rgba(0, 0, 0, 0.8);"></rect>
+  </g>
+</svg>

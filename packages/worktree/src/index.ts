@@ -15,15 +15,15 @@ export interface CreatedWorktree {
  * Create an isolated git worktree off `repoPath`'s HEAD on a fresh branch, so a
  * session can edit without touching the user's checkout or other sessions. Throws
  * if `repoPath` is not inside a git repo. `baseDir` overrides the parent dir
- * (defaults to `~/.governor/worktrees`), mainly for tests.
+ * (defaults to `~/.jig/worktrees`), mainly for tests.
  */
 export function createWorktree(repoPath: string, baseDir?: string): CreatedWorktree {
   const top = execFileSync("git", ["-C", repoPath, "rev-parse", "--show-toplevel"], {
     encoding: "utf8",
   }).trim();
   const id = randomUUID().slice(0, 8);
-  const branch = `governor/${id}`;
-  const root = baseDir ?? join(homedir(), ".governor", "worktrees");
+  const branch = `jig/${id}`;
+  const root = baseDir ?? join(homedir(), ".jig", "worktrees");
   mkdirSync(root, { recursive: true });
   const path = join(root, `${basename(top)}-${id}`);
   execFileSync("git", ["-C", top, "worktree", "add", "-b", branch, path, "HEAD"], {

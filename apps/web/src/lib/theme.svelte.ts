@@ -1,7 +1,7 @@
 import { BUILTIN_THEMES, getHighlighter } from "./highlight.ts";
 
-const CURRENT_KEY = "governor:theme";
-const CUSTOM_KEY = "governor:customThemes";
+const CURRENT_KEY = "jig:theme";
+const CUSTOM_KEY = "jig:customThemes";
 const DEFAULT_THEME = "one-dark-pro";
 
 /** A VSCode-style theme JSON (only the bits we need are typed). */

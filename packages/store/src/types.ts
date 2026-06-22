@@ -1,11 +1,11 @@
 import type {
   EventType,
   GateState,
-  GovernorEvent,
+  JigEvent,
   Session,
   SessionConfig,
   SessionStatus,
-} from "@governor/contracts";
+} from "@agent-jig/contracts";
 
 export interface NewSession {
   repoPath: string;
@@ -42,10 +42,10 @@ export interface Storage {
   getPlanMode(id: string): boolean;
 
   /** Appends an event, assigning id/seq/ts, and returns the stored row. */
-  appendEvent(event: NewEvent): GovernorEvent;
+  appendEvent(event: NewEvent): JigEvent;
   /** Update a stored event's gate state (e.g. a resolved question is no longer pending). */
   setEventGateState(eventId: string, gateState: GateState | null): void;
-  listEvents(sessionId: string): GovernorEvent[];
+  listEvents(sessionId: string): JigEvent[];
 
   getConfig(): SessionConfig;
   setConfig(config: SessionConfig): void;

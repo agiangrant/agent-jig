@@ -5,11 +5,11 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import type { RunSessionDeps } from "@governor/agent-host";
-import { ClientToServer, type DialMode, type Session } from "@governor/contracts";
-import { createNarrator } from "@governor/narrator";
-import { SqliteStorage } from "@governor/store";
-import { StructuralAnalyzer } from "@governor/structural";
+import type { RunSessionDeps } from "@agent-jig/agent-host";
+import { ClientToServer, type DialMode, type Session, SessionConfig } from "@agent-jig/contracts";
+import { createNarrator } from "@agent-jig/narrator";
+import { SqliteStorage } from "@agent-jig/store";
+import { StructuralAnalyzer } from "@agent-jig/structural";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { WebSocketServer } from "ws";
@@ -41,17 +41,17 @@ async function nativePickFolder(): Promise<string | null> {
 
 export interface ServerOptions {
   port?: number;
-  /** SQLite path. Defaults to `~/.governor/governor.db`; `:memory:` for ephemeral. */
+  /** SQLite path. Defaults to `~/.jig/jig.db`; `:memory:` for ephemeral. */
   dbPath?: string;
   /** Absolute path to the built web bundle. Defaults to `apps/web/dist`. */
   webRoot?: string;
-  /** Generate per-edit "why" narration (Haiku). Default on; off via GOVERNOR_NARRATE=0. */
+  /** Generate per-edit "why" narration (Haiku). Default on; off via JIG_NARRATE=0. */
   narrate?: boolean;
   /** Injectable SDK `query` for tests; used for every session. */
   queryImpl?: RunSessionDeps["queryImpl"];
   /** Injectable native folder picker (tests stub it). Returns an abs path or null. */
   pickFolder?: () => Promise<string | null>;
-  /** Optionally create one session at boot (the `governor run` single-shot path). */
+  /** Optionally create one session at boot (the `jig run` single-shot path). */
   repoPath?: string;
   prompt?: string;
   mode?: DialMode;
@@ -74,29 +74,38 @@ function resolveFrom(rel: string): string {
 /** True for same-machine browser origins (any port) and non-browser clients (no Origin). */
 function isLocalOrigin(origin: string | undefined): boolean {
   if (!origin) return true;
+  // The Tauri desktop shell serves the UI from a custom-scheme origin:
+  // `tauri://localhost` (macOS/Linux) or `http(s)://tauri.localhost` (Windows).
+  // It runs on this machine — treat it as local so the event-stream WS connects.
+  if (origin.startsWith("tauri://")) return true;
   try {
     const { hostname } = new URL(origin);
-    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+    return (
+      hostname === "localhost" ||
+      hostname === "127.0.0.1" ||
+      hostname === "::1" ||
+      hostname === "tauri.localhost"
+    );
   } catch {
     return false;
   }
 }
 
-export async function startGovernorServer(opts: ServerOptions): Promise<RunningServer> {
-  const dbPath = opts.dbPath ?? join(homedir(), ".governor", "governor.db");
+export async function startJigServer(opts: ServerOptions): Promise<RunningServer> {
+  const dbPath = opts.dbPath ?? join(homedir(), ".jig", "jig.db");
   if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
 
   const store = new SqliteStorage(dbPath);
   const analyzer = await StructuralAnalyzer.create().catch(() => null);
   // Narration/intent-labels need an LLM: Anthropic creds, or any OpenAI-compatible
-  // endpoint (e.g. a local Ollama via GOVERNOR_LLM_BASE_URL).
+  // endpoint (e.g. a local Ollama via JIG_LLM_BASE_URL).
   const hasLlm = Boolean(
     process.env.ANTHROPIC_API_KEY ||
       process.env.ANTHROPIC_AUTH_TOKEN ||
-      process.env.GOVERNOR_LLM_BASE_URL,
+      process.env.JIG_LLM_BASE_URL,
   );
   const narrationOn =
-    (opts.narrate ?? !["0", "off", "false"].includes(process.env.GOVERNOR_NARRATE ?? "")) && hasLlm;
+    (opts.narrate ?? !["0", "off", "false"].includes(process.env.JIG_NARRATE ?? "")) && hasLlm;
   const narrator = narrationOn ? createNarrator() : null;
 
   const manager = new SessionManager({ store, analyzer, narrator, queryImpl: opts.queryImpl });
@@ -113,7 +122,7 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
     if (origin && local) {
       c.header("access-control-allow-origin", origin);
       c.header("access-control-allow-headers", "content-type");
-      c.header("access-control-allow-methods", "GET, POST, PATCH, DELETE");
+      c.header("access-control-allow-methods", "GET, POST, PUT, PATCH, DELETE");
     }
     if (c.req.method === "OPTIONS") return c.body(null, 204);
     // CSRF→RCE guard: POST /sessions spawns an agent. A browser always sends
@@ -131,6 +140,16 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
     const path = await pickFolder();
     if (!path) return c.json({ error: "no folder selected" }, 400);
     return c.json({ path });
+  });
+
+  // Global governance config (risk rules, default dial, idle threshold). Read by
+  // the gate at session/run start, so edits take effect for new gate decisions.
+  app.get("/config", (c) => c.json(store.getConfig()));
+  app.put("/config", async (c) => {
+    const parsed = SessionConfig.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) return c.json({ error: "invalid config" }, 400);
+    store.setConfig(parsed.data);
+    return c.json(parsed.data);
   });
 
   app.get("/sessions", (c) => c.json(manager.list()));
@@ -165,6 +184,24 @@ export async function startGovernorServer(opts: ServerOptions): Promise<RunningS
   app.delete("/sessions/:id", async (c) => {
     await manager.remove(c.req.param("id"));
     return c.body(null, 204);
+  });
+  // Read a slice of a worktree file so the Review tab can expand context around an
+  // edit (or preview a touched file). 1-indexed `from`/`to`; omit both (or `full`)
+  // for the whole file. Path traversal is rejected inside readFileSlice.
+  app.get("/sessions/:id/file", (c) => {
+    const gs = manager.get(c.req.param("id"));
+    if (!gs) return c.json({ error: "not found" }, 404);
+    const path = c.req.query("path");
+    if (!path) return c.json({ error: "path is required" }, 400);
+    const num = (v: string | undefined) => (v ? Number(v) : undefined);
+    const full = c.req.query("full");
+    try {
+      const from = full ? undefined : num(c.req.query("from"));
+      const to = full ? undefined : num(c.req.query("to"));
+      return c.json(gs.readFileSlice(path, from, to));
+    } catch (e) {
+      return c.json({ error: (e as Error).message ?? "could not read file" }, 400);
+    }
   });
   app.get("/*", serveWeb(opts.webRoot ?? defaultWebRoot()));
 

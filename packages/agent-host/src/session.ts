@@ -1,9 +1,9 @@
+import type { JigEvent, Session } from "@agent-jig/contracts";
+import type { Pacer } from "@agent-jig/core";
+import type { Storage } from "@agent-jig/store";
+import type { Worktree } from "@agent-jig/worktree";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import type { GovernorEvent, Session } from "@governor/contracts";
-import type { Pacer } from "@governor/core";
-import type { Storage } from "@governor/store";
-import type { Worktree } from "@governor/worktree";
 import { makeCanUseTool } from "./gate.ts";
 import { InputStream } from "./input-stream.ts";
 import { ProvenanceTracker } from "./provenance.ts";
@@ -13,7 +13,7 @@ export interface RunSessionDeps {
   prompt: string;
   pacer: Pacer;
   store: Storage;
-  onEvent?: (event: GovernorEvent) => void;
+  onEvent?: (event: JigEvent) => void;
   /** Extra SDK options merged over the defaults (model, allowedTools, ...). */
   options?: Partial<Options>;
   /** Injectable for tests; defaults to the real SDK `query`. */
@@ -55,7 +55,7 @@ export interface RunningSession {
  * tools flow through {@link makeCanUseTool} into the log. The input stream is
  * auto-ended after the agent's final turn so a plain run still completes.
  */
-export function runGovernedSession(deps: RunSessionDeps): RunningSession {
+export function runJigSession(deps: RunSessionDeps): RunningSession {
   const { session, store, onEvent } = deps;
   const tracker = deps.worktree ? new ProvenanceTracker(deps.worktree) : undefined;
   const canUseTool = makeCanUseTool({
@@ -70,11 +70,11 @@ export function runGovernedSession(deps: RunSessionDeps): RunningSession {
   });
 
   const input = new InputStream();
-  // Fresh: the task is the first turn. Resume: history already holds the task, so
-  // push a short nudge to make the agent continue (streaming input acts on turns).
-  input.push(
-    deps.resume ? "Resume the task you were working on; continue where you left off." : deps.prompt,
-  );
+  // The caller owns the first message: the task prompt for a fresh run, a
+  // continue-nudge when resuming on restart, or the user's new instruction when
+  // resuming on demand. (Streaming input acts on turns, so the first push is the
+  // opening turn.)
+  input.push(deps.prompt);
   // The first turn is one turn; each injected directive adds another. End the
   // input stream only once every expected turn has produced its `result`, so we
   // never close it out from under the agent while it's acting on a directive.

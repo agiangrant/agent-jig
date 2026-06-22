@@ -1,27 +1,40 @@
 import { randomUUID } from "node:crypto";
-import { type RunningSession, type RunSessionDeps, runGovernedSession } from "@governor/agent-host";
+import { readFileSync, realpathSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
+import { type RunningSession, type RunSessionDeps, runJigSession } from "@agent-jig/agent-host";
+import {
+  buildImpactMap,
+  type CodeGraphProvider,
+  descriptorById,
+  installServer,
+  LspCodeGraphProvider,
+  listServerStatus,
+  type SymbolRef,
+} from "@agent-jig/codegraph";
 import type {
   ChangeView,
   ClientToServer,
   DialMode,
-  GovernorEvent,
+  FileSlice,
+  ImpactMap,
+  JigEvent,
   PendingPlan,
   PendingQuestion,
   Question,
   Session,
   SessionSummary,
-} from "@governor/contracts";
-import { groupByIntent, isWriteClass, Pacer } from "@governor/core";
-import type { Narrator } from "@governor/narrator";
-import { Sidecar } from "@governor/sidecar";
-import type { Storage } from "@governor/store";
-import type { StructuralAnalyzer } from "@governor/structural";
-import { Worktree } from "@governor/worktree";
+} from "@agent-jig/contracts";
+import { groupByIntent, isWriteClass, Pacer } from "@agent-jig/core";
+import type { Narrator } from "@agent-jig/narrator";
+import { Sidecar } from "@agent-jig/sidecar";
+import type { Storage } from "@agent-jig/store";
+import type { StructuralAnalyzer } from "@agent-jig/structural";
+import { Worktree } from "@agent-jig/worktree";
 import type { WebSocket } from "ws";
 import { Broadcaster } from "./broadcaster.ts";
 import { buildChangeView, visibleEvents } from "./changeView.ts";
 
-export interface GovernedSessionDeps {
+export interface JigSessionDeps {
   session: Session;
   mode?: DialMode;
   store: Storage;
@@ -36,6 +49,8 @@ export interface GovernedSessionDeps {
   planMode?: boolean;
   /** Fired when this session's attention state changes (queue/question/clients). */
   onAttention?: () => void;
+  /** Inject a code-graph provider (tests); defaults to a lazily-created LSP-backed one. */
+  impactProvider?: CodeGraphProvider;
 }
 
 /** Stand-in for a session with no live agent (detached/view-only rehydration). */
@@ -46,8 +61,11 @@ const INERT_RUNNING: RunningSession = {
   interrupt: async () => {},
 };
 
+/** First message when resuming on restart — history already holds the task. */
+const RESUME_NUDGE = "Resume the task you were working on; continue where you left off.";
+
 /** A compact transcript of the agent's activity, for the sidecar's context. */
-function buildTranscript(events: GovernorEvent[]): string {
+function buildTranscript(events: JigEvent[]): string {
   const lines: string[] = [];
   for (const e of events) {
     if (e.type === "reasoning") {
@@ -69,14 +87,20 @@ function buildTranscript(events: GovernorEvent[]): string {
  * scoped to this session by the connection. The store, analyzer, and narrator
  * are shared across sessions by the manager.
  */
-export class GovernedSession {
+export class JigSession {
   readonly id: string;
   private readonly repoPath: string;
   private readonly store: Storage;
+  private readonly session: Session;
+  private readonly queryImpl: RunSessionDeps["queryImpl"];
   private readonly analyzer: StructuralAnalyzer | null;
   private readonly pacer: Pacer;
   private readonly broadcaster = new Broadcaster();
-  private readonly running: RunningSession;
+  private running: RunningSession;
+  /** Whether a live agent run is in flight (vs finished/stopped/detached). */
+  private live = false;
+  /** Set when the human asks to stop, so the finished run settles to `paused`. */
+  private stopRequested = false;
   private readonly sidecar: Sidecar;
   private readonly narrator: Narrator | null;
   /** Generated intent labels, keyed by group id (first edit). */
@@ -91,26 +115,26 @@ export class GovernedSession {
   /** Set once the human renames the session, so the LLM title won't overwrite it. */
   private titleManual = false;
   private readonly onAttention: (() => void) | undefined;
+  /** Lazily-created code-graph provider (tree-sitter + LSP); only on first focus. */
+  private impactProviderPromise: Promise<CodeGraphProvider> | null = null;
+  /** Computed impact maps, keyed by focused path; cleared when any edit lands. */
+  private readonly impactCache = new Map<string, ImpactMap>();
+  /** A test-injected provider, if any (else the LSP-backed one is created lazily). */
+  private readonly injectedProvider: CodeGraphProvider | undefined;
 
-  constructor(deps: GovernedSessionDeps) {
+  constructor(deps: JigSessionDeps) {
     this.id = deps.session.id;
     this.repoPath = deps.session.repoPath;
     this.store = deps.store;
+    this.session = deps.session;
+    this.queryImpl = deps.queryImpl;
     this.analyzer = deps.analyzer;
     this.narrator = deps.narrator;
     this.onAttention = deps.onAttention;
+    this.injectedProvider = deps.impactProvider;
     const detached = deps.detached ?? false;
     // Restore the dial from the last change so a reconnected session keeps its pace.
     this.pacer = new Pacer(deps.mode ?? this.restoreMode() ?? deps.store.getConfig().defaultMode);
-
-    const narrator = deps.narrator;
-    const onEvent = (event: GovernorEvent) => {
-      this.broadcaster.broadcast({ type: "event", event });
-      if (event.type === "reasoning" || event.type === "tool_call") this.broadcastChangeView();
-      // A rejection removes an edit from the change view — rebuild so it drops out.
-      else if (event.type === "ack" && event.gateState === "rejected") this.broadcastChangeView();
-      if (narrator !== null) this.narrate(narrator, event);
-    };
 
     this.pacer.onQueueChange = (pending) => {
       this.broadcaster.broadcast({ type: "queue_state", pending });
@@ -121,26 +145,115 @@ export class GovernedSession {
       this.broadcaster.broadcast({ type: "dial_state", mode });
     };
 
-    this.running = detached
-      ? INERT_RUNNING
-      : runGovernedSession({
-          session: deps.session,
-          prompt: deps.session.taskPrompt,
-          pacer: this.pacer,
-          store: this.store,
-          worktree: new Worktree(this.repoPath),
-          onEvent,
-          queryImpl: deps.queryImpl,
-          askQuestion: (input) => this.askHuman(input),
-          reviewPlan: (input) => this.reviewPlan(input),
-          resume: deps.resumeClaudeId,
-          planMode: deps.planMode,
-          onSessionId: (cid) => this.store.setClaudeSessionId(this.id, cid),
-        });
+    if (detached) {
+      this.running = INERT_RUNNING; // view-only; resume() can later revive it
+    } else {
+      // Fresh: the task prompt is the opening turn. Restart-resume: history holds
+      // the task, so nudge it to continue.
+      const firstMessage = deps.resumeClaudeId ? RESUME_NUDGE : deps.session.taskPrompt;
+      this.running = this.startRunner(firstMessage, deps.resumeClaudeId, deps.planMode);
+    }
 
     this.sidecar = new Sidecar({ repoPath: this.repoPath, queryImpl: deps.queryImpl });
     // Only brand-new sessions need a title generated; rehydrated ones already have one.
     if (!detached && deps.resumeClaudeId === undefined) this.initTitle(deps.session.taskPrompt);
+  }
+
+  /** Broadcast a stored event and refresh derived views/narration. */
+  private handleEvent(event: JigEvent): void {
+    this.broadcaster.broadcast({ type: "event", event });
+    if (event.type === "reasoning" || event.type === "tool_call") this.broadcastChangeView();
+    // A rejection removes an edit from the change view — rebuild so it drops out.
+    else if (event.type === "ack" && event.gateState === "rejected") this.broadcastChangeView();
+    // An edit (or out-of-band change) reshapes the dependency graph — drop stale
+    // maps and the provider's cached import graph.
+    if (event.type === "tool_call" || event.type === "out_of_band_change") {
+      this.impactCache.clear();
+      void this.impactProviderPromise?.then((p) => p.invalidate?.());
+    }
+    if (this.narrator !== null) this.narrate(this.narrator, event);
+  }
+
+  /**
+   * Build (or rebuild, on resume) the live agent runner with shared wiring.
+   * `firstMessage` is the opening turn; `resumeId` re-attaches to a saved SDK
+   * session so the agent continues with full prior context.
+   */
+  private startRunner(firstMessage: string, resumeId?: string, planMode = false): RunningSession {
+    const running = runJigSession({
+      session: this.session,
+      prompt: firstMessage,
+      pacer: this.pacer,
+      store: this.store,
+      worktree: new Worktree(this.repoPath),
+      onEvent: (event) => this.handleEvent(event),
+      queryImpl: this.queryImpl,
+      askQuestion: (input) => this.askHuman(input),
+      reviewPlan: (input) => this.reviewPlan(input),
+      resume: resumeId,
+      planMode,
+      onSessionId: (cid) => this.store.setClaudeSessionId(this.id, cid),
+    });
+    this.live = true;
+    this.stopRequested = false;
+    // When the turn (or the whole run) unwinds, settle status and tell clients.
+    void running.result.catch(() => {}).finally(() => this.onRunnerFinished());
+    return running;
+  }
+
+  /** The live run ended. session.ts already set done/error; a stop is a pause. */
+  private onRunnerFinished(): void {
+    this.live = false;
+    if (this.stopRequested) {
+      this.store.setSessionStatus(this.id, "paused");
+      this.stopRequested = false;
+    }
+    this.broadcaster.broadcast({ type: "session_state", session: this.meta() });
+    this.onAttention?.();
+  }
+
+  /** Cleanly halt the agent; the session becomes `paused` and stays resumable. */
+  stop(): void {
+    if (!this.live) return;
+    this.stopRequested = true;
+    this.clearPendingHumanGates("Stopped by the developer.");
+    // Drop any gated edits so a parked canUseTool unblocks and the run can unwind.
+    for (const p of [...this.pacer.queue]) this.pacer.reject(p.editId, "Stopped by the developer.");
+    void this.running.interrupt().catch(() => {});
+  }
+
+  /**
+   * Re-attach to the saved Claude session and continue with `firstMessage`. This
+   * is how a stopped/finished/detached session resumes: sending a new directive
+   * spins a fresh `query({ resume })` so the agent picks up with full context.
+   */
+  private resume(firstMessage: string): void {
+    if (this.live) return;
+    const claudeId = this.store.getClaudeSessionId(this.id) ?? undefined;
+    this.store.setSessionStatus(this.id, "running");
+    this.running = this.startRunner(firstMessage, claudeId);
+    this.broadcaster.broadcast({ type: "session_state", session: this.meta() });
+    this.onAttention?.();
+  }
+
+  /** Resolve & clear any open question/plan the agent is parked on. */
+  private clearPendingHumanGates(reason: string): void {
+    if (this.answerQuestion) {
+      this.answerQuestion(reason);
+      this.answerQuestion = null;
+    }
+    if (this.question !== null) {
+      this.question = null;
+      this.broadcaster.broadcast({ type: "question_state", question: null });
+    }
+    if (this.decidePlan) {
+      this.decidePlan({ approved: false, message: reason });
+      this.decidePlan = null;
+    }
+    if (this.plan !== null) {
+      this.plan = null;
+      this.broadcaster.broadcast({ type: "plan_state", plan: null });
+    }
   }
 
   /** The dial mode from the last dial_change event, if any. */
@@ -184,6 +297,42 @@ export class GovernedSession {
     return this.store.getSession(this.id) ?? this.fallbackMeta();
   }
 
+  /**
+   * Read a slice of a file in this session's worktree, for the Review tab to
+   * expand context around an edit (or preview a touched file). `from`/`to` are
+   * 1-indexed and inclusive; omitting them returns the whole file. Throws if the
+   * path escapes the worktree (traversal) or the file can't be read.
+   */
+  readFileSlice(relPath: string, from?: number, to?: number): FileSlice {
+    const target = isAbsolute(relPath) ? resolve(relPath) : resolve(this.repoPath, relPath);
+    // Cheap lexical containment: rejects `../` traversal and absolute paths.
+    const lexRel = relative(this.repoPath, target);
+    if (lexRel === "" || lexRel.startsWith("..") || isAbsolute(lexRel)) {
+      throw new Error("path escapes the session worktree");
+    }
+    // Symlink containment: a lexical check alone lets a symlink *inside* the
+    // worktree point outside it, so resolve real paths too. realpathSync throws
+    // ENOENT for a missing file, which we surface as a plain read error.
+    let realBase: string;
+    let realTarget: string;
+    try {
+      realBase = realpathSync(this.repoPath);
+      realTarget = realpathSync(target);
+    } catch {
+      throw new Error("file not found in the session worktree");
+    }
+    const rel = relative(realBase, realTarget);
+    if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+      throw new Error("path escapes the session worktree");
+    }
+    const all = readFileSync(realTarget, "utf8").split("\n");
+    const total = all.length;
+    const start = from && from > 0 ? from : 1;
+    const end = to && to > 0 ? Math.min(to, total) : total;
+    const lines = end >= start ? all.slice(start - 1, end) : [];
+    return { path: relPath, totalLines: total, from: start, to: Math.max(start - 1, end), lines };
+  }
+
   /** Meta + the "needs the human" state used to badge the tab. */
   summary(): SessionSummary {
     return {
@@ -191,6 +340,7 @@ export class GovernedSession {
       pendingEdits: this.pacer.queue.length,
       awaitingQuestion: this.question !== null,
       awaitingPlan: this.plan !== null,
+      resumable: this.store.getClaudeSessionId(this.id) !== null,
     };
   }
 
@@ -219,9 +369,126 @@ export class GovernedSession {
     else if (msg.type === "ack_edit") this.pacer.ack(msg.editId);
     else if (msg.type === "reject_edit") this.rejectEdit(msg.editId, msg.reason);
     else if (msg.type === "send_directive") this.sendDirective(msg.text, msg.anchorEditId);
+    else if (msg.type === "stop_session") this.stop();
     else if (msg.type === "sidecar_message") this.askSidecar(msg.text);
     else if (msg.type === "answer_question") this.resolveQuestion(msg.questionId, msg.answers);
     else if (msg.type === "decide_plan") this.resolvePlan(msg.planId, msg.approved, msg.reason);
+    else if (msg.type === "request_impact") void this.requestImpact(msg.path);
+    else if (msg.type === "request_lsp_servers") this.broadcastLspServers();
+    else if (msg.type === "install_lsp") void this.installLsp(msg.serverId, msg.path);
+  }
+
+  /** The language-server registry with this session's install state, for Settings. */
+  private broadcastLspServers(installingId?: string): void {
+    const servers = listServerStatus(this.repoPath).map((s) => ({
+      ...s,
+      installing: s.serverId === installingId,
+    }));
+    this.broadcaster.broadcast({ type: "lsp_servers", servers });
+  }
+
+  private impactProvider(): Promise<CodeGraphProvider> {
+    this.impactProviderPromise ??=
+      this.injectedProvider !== undefined
+        ? Promise.resolve(this.injectedProvider)
+        : LspCodeGraphProvider.create(this.repoPath);
+    return this.impactProviderPromise;
+  }
+
+  /**
+   * Compute (off the hot path) and broadcast the 1-hop dependency impact map for a
+   * focused file. The edited lines come from this file's tool_call payloads
+   * (`startLine`/`startLines`, computed at the gate) and anchor the ripple subset.
+   * Cached per path; the cache is cleared whenever an edit reshapes the graph.
+   */
+  /** Broadcast an impact map echoing the requested path, so the client can match it. */
+  private sendImpact(requested: string, map: ImpactMap | null): void {
+    this.broadcaster.broadcast({ type: "impact_map", requested, map });
+  }
+
+  private async requestImpact(path: string): Promise<void> {
+    const cached = this.impactCache.get(path);
+    if (cached) {
+      this.sendImpact(path, cached);
+      return;
+    }
+    let focus: string;
+    try {
+      focus = this.resolveInWorktree(path);
+    } catch {
+      this.sendImpact(path, null);
+      return;
+    }
+
+    const { editedSymbols, edits } = this.editedSymbolsFor(path);
+    try {
+      const provider = await this.impactProvider();
+      const map = await buildImpactMap({
+        focus,
+        repoRoot: this.repoPath,
+        editedSymbols,
+        edits,
+        provider,
+      });
+      this.impactCache.set(path, map);
+      this.sendImpact(path, map);
+    } catch {
+      this.sendImpact(path, null);
+    }
+  }
+
+  /**
+   * Install a language server on demand (from the degraded map or from Settings),
+   * then refresh the server list and, if a file was focused, its impact map. The
+   * whole impact cache is cleared because a new server lifts the degraded state for
+   * every file of that language, not just the focused one.
+   */
+  private async installLsp(serverId: string, path: string | null): Promise<void> {
+    const desc = descriptorById(serverId);
+    if (!desc) return;
+    this.broadcastLspServers(serverId); // optimistic "installing…" in Settings
+    if (path) {
+      const cached = this.impactCache.get(path);
+      if (cached?.install) {
+        this.sendImpact(path, { ...cached, install: { ...cached.install, installing: true } });
+      }
+    }
+    await installServer(desc).catch(() => null);
+    this.impactCache.clear(); // capabilities changed — recompute on next focus
+    this.broadcastLspServers();
+    if (path) await this.requestImpact(path);
+  }
+
+  /** Edited lines (0-based) and edit count for a path, from its tool_call events. */
+  private editedSymbolsFor(path: string): { editedSymbols: SymbolRef[]; edits: number } {
+    const editedSymbols: SymbolRef[] = [];
+    let edits = 0;
+    for (const e of this.store.listEvents(this.id)) {
+      if (e.type !== "tool_call" || e.editId === null) continue;
+      const p = (e.payload ?? {}) as {
+        file_path?: string;
+        startLine?: number;
+        startLines?: number[];
+      };
+      if (p.file_path !== path) continue;
+      edits++;
+      if (typeof p.startLine === "number")
+        editedSymbols.push({ name: "", line: p.startLine - 1, character: 0 });
+      for (const sl of p.startLines ?? [])
+        editedSymbols.push({ name: "", line: sl - 1, character: 0 });
+    }
+    return { editedSymbols, edits };
+  }
+
+  /** Resolve a (possibly absolute) focus path and assert it stays inside the worktree. */
+  private resolveInWorktree(path: string): string {
+    const target = isAbsolute(path) ? resolve(path) : resolve(this.repoPath, path);
+    const real = realpathSync(target);
+    const rel = relative(realpathSync(this.repoPath), real);
+    if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+      throw new Error("path escapes the session worktree");
+    }
+    return real;
   }
 
   /**
@@ -301,12 +568,13 @@ export class GovernedSession {
 
   async close(): Promise<void> {
     // Unblock a pending question/plan so the agent's canUseTool await doesn't hang.
-    this.answerQuestion?.("The developer ended the session without answering.");
-    this.answerQuestion = null;
-    this.decidePlan?.({ approved: false, message: "The developer ended the session." });
-    this.decidePlan = null;
+    this.clearPendingHumanGates("The developer ended the session.");
     await this.running.interrupt().catch(() => {});
     await this.sidecar.close().catch(() => {});
+    // Shut down any language servers this session spawned for the impact map.
+    await this.impactProviderPromise
+      ?.then((p) => (p as Partial<LspCodeGraphProvider>).dispose?.())
+      .catch(() => {});
   }
 
   private changeView(): ChangeView {
@@ -324,7 +592,7 @@ export class GovernedSession {
    * summary when available; trigger generation (once per group) for long
    * reasonings otherwise, re-broadcasting when each resolves. Cached by group id.
    */
-  private enrichIntentLabels(view: ChangeView, events: GovernorEvent[]): void {
+  private enrichIntentLabels(view: ChangeView, events: JigEvent[]): void {
     const narrator = this.narrator;
     if (narrator === null) return;
     const reasonById = new Map(groupByIntent(visibleEvents(events)).map((g) => [g.id, g.reason]));
@@ -379,8 +647,11 @@ export class GovernedSession {
 
     if (targets.length > 0) {
       for (const id of targets) this.pacer.reject(id, composed);
-    } else {
+    } else if (this.live) {
       this.running.sendDirective(composed);
+    } else {
+      // The agent has finished or been stopped — a new instruction resumes it.
+      this.resume(composed);
     }
 
     const event = this.store.appendEvent({
@@ -413,7 +684,7 @@ export class GovernedSession {
       .then((reply) => this.broadcaster.broadcast({ type: "sidecar_reply", text: reply }));
   }
 
-  private narrate(narrator: Narrator, event: GovernorEvent): void {
+  private narrate(narrator: Narrator, event: JigEvent): void {
     if (event.type !== "tool_call" || event.editId === null) return;
     if (!isWriteClass(event.toolName ?? "")) return;
     const editId = event.editId;

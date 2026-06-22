@@ -1,4 +1,4 @@
-import { DEFAULT_CONFIG } from "@governor/contracts";
+import { DEFAULT_CONFIG } from "@agent-jig/contracts";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SqliteStorage } from "./sqlite.ts";
 

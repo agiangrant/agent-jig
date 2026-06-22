@@ -1,7 +1,7 @@
 // Dev harness: run a real governed session and auto-ack each gated edit after a
 // short beat, to demonstrate the live backpressure loop. Not part of the product.
-import type { ChangeView, GovernorEvent } from "@governor/contracts";
-import { startGovernorServer } from "@governor/server";
+import type { ChangeView, JigEvent } from "@agent-jig/contracts";
+import { startJigServer } from "@agent-jig/server";
 import { WebSocket } from "ws";
 
 const repo = process.argv[2] ?? process.cwd();
@@ -13,14 +13,14 @@ const ACK_DELAY_MS = Number(process.env.ACK_DELAY_MS ?? 800);
 const t0 = Date.now();
 const ts = () => `+${((Date.now() - t0) / 1000).toFixed(1)}s`;
 
-const server = await startGovernorServer({ port: 0, dbPath: ":memory:" });
+const server = await startJigServer({ port: 0, dbPath: ":memory:" });
 const session = server.createSession({ repoPath: repo, prompt: task, mode: "slowed" });
 console.log(`${ts()} server up at ${server.url} — session ${session.id} (mode: slowed)`);
 
-const STEER = process.env.GOVERNOR_STEER; // inject this directive once, after the first edit
+const STEER = process.env.JIG_STEER; // inject this directive once, after the first edit
 const scheduled = new Set<string>();
 let steered = false;
-const events: GovernorEvent[] = [];
+const events: JigEvent[] = [];
 let changeView: ChangeView = [];
 let resolveDone: () => void = () => {};
 const done = new Promise<void>((r) => {
@@ -31,7 +31,7 @@ const ws = new WebSocket(`${server.url.replace("http", "ws")}?session=${session.
 ws.on("message", (raw) => {
   const msg = JSON.parse(String(raw));
   if (msg.type === "event") {
-    const e = msg.event as GovernorEvent;
+    const e = msg.event as JigEvent;
     events.push(e);
     if (e.type === "session_end") resolveDone();
     if (e.type === "reasoning") {
@@ -92,7 +92,7 @@ for (const g of changeView) {
   }
 }
 
-const ASK = process.env.GOVERNOR_ASK;
+const ASK = process.env.JIG_ASK;
 if (ASK) {
   console.log(`${ts()} ❓ ${ASK}`);
   const reply = await new Promise<string>((resolve) => {

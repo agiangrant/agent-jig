@@ -1,5 +1,5 @@
 {
-  "name": "@governor/web",
+  "name": "@agent-jig/web",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -9,7 +9,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@governor/contracts": "workspace:*",
+    "@agent-jig/contracts": "workspace:*",
+    "@tauri-apps/api": "^2.9.0",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
     "shiki": "^4.2.0"
   },
   "devDependencies": {

@@ -1,9 +1,9 @@
-import type { GovernorEvent } from "@governor/contracts";
+import type { JigEvent } from "@agent-jig/contracts";
 import { describe, expect, it } from "vitest";
 import { groupByIntent } from "./intent.ts";
 
 let seq = 0;
-function ev(partial: Partial<GovernorEvent>): GovernorEvent {
+function ev(partial: Partial<JigEvent>): JigEvent {
   seq += 1;
   return {
     id: `e${seq}`,

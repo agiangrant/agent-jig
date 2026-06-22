@@ -39,6 +39,8 @@ export const SessionSummary = Session.extend({
   awaitingQuestion: z.boolean().default(false),
   /** True if the agent is waiting for the human to approve a plan. */
   awaitingPlan: z.boolean().default(false),
+  /** True if a stopped/finished session can be resumed (a saved SDK session id). */
+  resumable: z.boolean().default(false),
 });
 export type SessionSummary = z.infer<typeof SessionSummary>;
 
@@ -72,7 +74,7 @@ export const OutOfBandChange = z.object({
 export type OutOfBandChange = z.infer<typeof OutOfBandChange>;
 
 /** Append-only, ordered per-session by `seq`. The three projections are views over this. */
-export const GovernorEvent = z.object({
+export const JigEvent = z.object({
   id: z.string(),
   sessionId: z.string(),
   seq: z.number().int(),
@@ -86,7 +88,7 @@ export const GovernorEvent = z.object({
   gateState: GateState.nullable().default(null),
   payload: z.unknown(),
 });
-export type GovernorEvent = z.infer<typeof GovernorEvent>;
+export type JigEvent = z.infer<typeof JigEvent>;
 
 /** A set of edits grouped under the agent's stated intent (a Phase 2 projection). */
 export const IntentGroup = z.object({
@@ -180,6 +182,21 @@ export const PendingEdit = z.object({
 });
 export type PendingEdit = z.infer<typeof PendingEdit>;
 
+/**
+ * A slice of a worktree file, served over HTTP (`GET /sessions/:id/file`) so the
+ * browser Review tab can expand context around an edit and preview touched files.
+ * `lines` is the 1-indexed inclusive range `[from, to]`; `totalLines` is the whole
+ * file's line count so the client can size unexpanded gaps without fetching them.
+ */
+export const FileSlice = z.object({
+  path: z.string(),
+  totalLines: z.number().int(),
+  from: z.number().int(),
+  to: z.number().int(),
+  lines: z.array(z.string()),
+});
+export type FileSlice = z.infer<typeof FileSlice>;
+
 /** One option the agent offered for a question. */
 export const QuestionOption = z.object({
   label: z.string(),
@@ -214,15 +231,96 @@ export const PendingPlan = z.object({
 });
 export type PendingPlan = z.infer<typeof PendingPlan>;
 
+// --- Architecture: the dependency impact map ---
+
+/** A node in the focused-file impact map. `kind` drives its color and column. */
+export const ImpactNode = z.object({
+  /** Repo-relative path; for the elision node this is a synthetic id like "more:dependents". */
+  path: z.string(),
+  kind: z.enum(["editing", "imports-it", "it-imports", "more"]),
+  /** Layout position in the 600x400 SVG viewBox (computed server-side). */
+  x: z.number(),
+  y: z.number(),
+  /** A short label (usually the basename; for the "more" node, "+N more"). */
+  label: z.string(),
+  /** Sub-label, e.g. "no tests" or the elided count. */
+  meta: z.string().default(""),
+  /** False when neither a sibling test nor a test-file dependent covers this file. */
+  hasTests: z.boolean().default(true),
+  /** Edits this session made to this file (drives the warm badge on the focus node). */
+  edits: z.number().int().default(0),
+  /** A dependent reached by the *edited* symbol(s) — visually emphasized. */
+  reachedByEdit: z.boolean().default(false),
+});
+export type ImpactNode = z.infer<typeof ImpactNode>;
+
+export const ImpactEdge = z.object({
+  /** Node paths (the `path` field of an ImpactNode). */
+  from: z.string(),
+  to: z.string(),
+  /** "imports-it" = dependent→focus; "it-imports" = focus→dependency. */
+  kind: z.enum(["imports-it", "it-imports"]),
+  /** A back-edge to an already-visited node (circular import) — rendered, not expanded. */
+  cyclic: z.boolean().default(false),
+});
+export type ImpactEdge = z.infer<typeof ImpactEdge>;
+
+/**
+ * The bounded 1-hop dependency neighborhood of a focused file: the file itself,
+ * the files that import it (dependents), and the files it imports (dependencies).
+ * A projection of the codebase graph computed lazily on focus; see @agent-jig/codegraph.
+ */
+export const ImpactMap = z.object({
+  /** Repo-relative path of the focused file. */
+  focus: z.string(),
+  nodes: z.array(ImpactNode),
+  edges: z.array(ImpactEdge),
+  /** Distinct dependents reached by the edited symbol(s) — the "ripples to N" count. */
+  rippleCount: z.number().int().default(0),
+  /** True when only tree-sitter ran (no language server) — dependencies only, no dependents. */
+  degraded: z.boolean().default(false),
+  /** Present when a language server could be installed to lift the degraded state. */
+  install: z
+    .object({
+      serverId: z.string(),
+      languageId: z.string(),
+      installing: z.boolean().default(false),
+    })
+    .nullable()
+    .default(null),
+});
+export type ImpactMap = z.infer<typeof ImpactMap>;
+
+/** One language server in the registry, with its install state for this session. */
+export const LspServerInfo = z.object({
+  serverId: z.string(),
+  /** Human label for the language, e.g. "TypeScript / JavaScript". */
+  language: z.string(),
+  /** installed = ready · installable = one click away · manual = needs a toolchain. */
+  status: z.enum(["installed", "installable", "manual"]),
+  /** For `manual` servers: the command to install it (e.g. "rustup component add …"). */
+  hint: z.string().default(""),
+  /** True while an on-demand install is in flight. */
+  installing: z.boolean().default(false),
+});
+export type LspServerInfo = z.infer<typeof LspServerInfo>;
+
 export const ServerToClient = z.discriminatedUnion("type", [
   z.object({ type: z.literal("session_state"), session: Session }),
-  z.object({ type: z.literal("event"), event: GovernorEvent }),
+  z.object({ type: z.literal("event"), event: JigEvent }),
   z.object({ type: z.literal("queue_state"), pending: z.array(PendingEdit) }),
   z.object({ type: z.literal("dial_state"), mode: DialMode }),
   z.object({ type: z.literal("change_view"), view: ChangeView }),
   z.object({ type: z.literal("sidecar_reply"), text: z.string() }),
   z.object({ type: z.literal("question_state"), question: PendingQuestion.nullable() }),
   z.object({ type: z.literal("plan_state"), plan: PendingPlan.nullable() }),
+  // The dependency impact map for a focused file; null while computing or when
+  // unavailable. `requested` echoes the exact path the client asked about (which
+  // may be absolute) so a late map for a since-changed focus can be discarded —
+  // map.focus is repo-relative and would not match the request.
+  z.object({ type: z.literal("impact_map"), requested: z.string(), map: ImpactMap.nullable() }),
+  // The language-server registry with per-session install state (for Settings).
+  z.object({ type: z.literal("lsp_servers"), servers: z.array(LspServerInfo) }),
   // Cross-session: the whole tab list with attention state, pushed live so tabs
   // (incl. inactive ones) update without waiting for the poll.
   z.object({ type: z.literal("sessions_summary"), sessions: z.array(SessionSummary) }),
@@ -238,7 +336,22 @@ export const ClientToServer = z.discriminatedUnion("type", [
     text: z.string(),
     anchorEditId: z.string().nullable().default(null),
   }),
+  /** Cleanly halt the agent; the session pauses and can be resumed by steering. */
+  z.object({ type: z.literal("stop_session") }),
   z.object({ type: z.literal("sidecar_message"), text: z.string() }),
+  /** Ask the server for the dependency impact map of a focused file (repo-relative path). */
+  z.object({ type: z.literal("request_impact"), path: z.string() }),
+  /** Ask for the language-server registry + install state (e.g. when Settings opens). */
+  z.object({ type: z.literal("request_lsp_servers") }),
+  /**
+   * Install a language server on demand. `path` (a focused file) re-renders that
+   * file's impact map afterward; null when triggered from Settings.
+   */
+  z.object({
+    type: z.literal("install_lsp"),
+    serverId: z.string(),
+    path: z.string().nullable().default(null),
+  }),
   z.object({
     type: z.literal("answer_question"),
     questionId: z.string(),

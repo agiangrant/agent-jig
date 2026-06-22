@@ -1,8 +1,8 @@
-# Governor
+# Jig
 
 *A pace-controlled, narrated, interruptible interface for supervised AI coding.*
 
-Generation got cheap; **comprehension and judgment** are now the scarce resources. Governor
+Generation got cheap; **comprehension and judgment** are now the scarce resources. Jig
 inserts a buffered channel with a human-controlled drain rate between a fast agent and a slow
 human — with **real backpressure on the agent**, not display-only delay. You set the pace; the
 agent's writes wait until you've caught up, so correction lands before consequences pile up.
@@ -28,13 +28,13 @@ plain in-memory primitive — no IPC.
 
 | Package | Responsibility |
 | --- | --- |
-| `@governor/contracts` | Zod schemas + types: the event log, ws protocol, config. Zero runtime deps. |
-| `@governor/core` | Pure domain logic: the `Pacer` (backpressure), tool classification, blast-radius risk scoring. |
-| `@governor/store` | SQLite (`better-sqlite3`) event log behind a `Storage` interface. |
-| `@governor/agent-host` | Wraps the Claude Agent SDK: gates write-class tools on the `Pacer`, streams tool calls into the log, injects directives. |
+| `@agent-jig/contracts` | Zod schemas + types: the event log, ws protocol, config. Zero runtime deps. |
+| `@agent-jig/core` | Pure domain logic: the `Pacer` (backpressure), tool classification, blast-radius risk scoring. |
+| `@agent-jig/store` | SQLite (`better-sqlite3`) event log behind a `Storage` interface. |
+| `@agent-jig/agent-host` | Wraps the Claude Agent SDK: gates write-class tools on the `Pacer`, streams tool calls into the log, injects directives. |
 | `apps/server` | Hono + `ws` gateway; embeds the agent host; serves the UI. |
 | `apps/web` | Svelte 5 + Vite UI: queue timeline + dial + ack (Phase 1 projection). |
-| `apps/cli` | `governor run "<task>"` — boots the server and a governed session. |
+| `apps/cli` | `jig run "<task>"` — boots the server and a governed session. |
 
 ## Develop
 
@@ -51,16 +51,16 @@ pnpm check:fix   # auto-fix
 ## Run it
 
 ```bash
-pnpm --filter @governor/web build                 # build the UI once (served by the server)
-pnpm --filter @governor/cli start -- run "your task here" --repo /path/to/target
+pnpm --filter @agent-jig/web build                 # build the UI once (served by the server)
+pnpm --filter @agent-jig/cli start -- run "your task here" --repo /path/to/target
 ```
 
 **Narration** (per-edit "why" lines + intent-group labels) uses a cheap model (Haiku) via the
 base Anthropic SDK, which needs an `ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) — separate
 from the agent's own CLI auth. Without one, narration is silently off; set the key (or
-`GOVERNOR_NARRATE=0` to force off) to control it. To run narration/labels on **any
-OpenAI-compatible endpoint** (e.g. a local Ollama) instead, set `GOVERNOR_LLM_BASE_URL` (plus
-`GOVERNOR_LLM_MODEL`, and `GOVERNOR_LLM_API_KEY` if the endpoint needs one). The governed agent
+`JIG_NARRATE=0` to force off) to control it. To run narration/labels on **any
+OpenAI-compatible endpoint** (e.g. a local Ollama) instead, set `JIG_LLM_BASE_URL` (plus
+`JIG_LLM_MODEL`, and `JIG_LLM_API_KEY` if the endpoint needs one). The governed agent
 itself still runs on the Claude Agent SDK.
 
 ### Dev mode (hot reload)
@@ -73,7 +73,7 @@ pnpm dev          # server on :4318, UI on http://localhost:5173 (talks to ws on
 ```
 
 It starts clean — create sessions from the UI's **New Session** modal. To also spin up one
-session at boot, set `GOVERNOR_REPO=/path/to/target` (and optionally `GOVERNOR_TASK="…"`).
+session at boot, set `JIG_REPO=/path/to/target` (and optionally `JIG_TASK="…"`).
 Server code changes restart the process (sessions reset); UI changes hot-reload in place.
 
 ## Status

@@ -1,5 +1,5 @@
-const MODE_KEY = "governor:diffMode";
-const LINES_KEY = "governor:lineNumbers";
+const MODE_KEY = "jig:diffMode";
+const LINES_KEY = "jig:lineNumbers";
 
 export type DiffViewMode = "split" | "unified" | "ba";
 

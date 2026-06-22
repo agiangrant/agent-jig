@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import type { JigEvent } from "@agent-jig/contracts";
+import { extractPath, isWriteClass, type Pacer, scoreRisk } from "@agent-jig/core";
+import type { Storage } from "@agent-jig/store";
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
-import type { GovernorEvent } from "@governor/contracts";
-import { extractPath, isWriteClass, type Pacer, scoreRisk } from "@governor/core";
-import type { Storage } from "@governor/store";
 import type { ProvenanceTracker } from "./provenance.ts";
 
 export interface GateDeps {
@@ -14,7 +14,7 @@ export interface GateDeps {
   /** Repo cwd, used to resolve edited files and compute real line numbers. */
   cwd?: string;
   /** Fired per appended event so the server can push it to the UI. */
-  onEvent?: (event: GovernorEvent) => void;
+  onEvent?: (event: JigEvent) => void;
   /** Detects working-tree changes the agent's gated tools didn't make. */
   tracker?: ProvenanceTracker;
   /** Presents an `AskUserQuestion` to the human; resolves to the answer text. */
@@ -68,7 +68,7 @@ function withLineNumbers(
 }
 
 /**
- * The SDK `canUseTool` callback — where backpressure is applied. Governor is the
+ * The SDK `canUseTool` callback — where backpressure is applied. Jig is the
  * permission authority (the human is in the web UI). A write-class tool in
  * `slowed` mode awaits {@link Pacer.requestGate} and genuinely blocks; everything
  * else is logged and allowed at once.
@@ -98,7 +98,14 @@ export function makeCanUseTool(deps: GateDeps): CanUseTool {
     const assessment = path ? scoreRisk(path, config.riskRules, config.defaultMode) : null;
     const risk = assessment?.risk ?? null;
     const editId = write ? randomUUID() : null;
-    const willGate = write && pacer.mode === "slowed";
+    // Auto-downshift: a path matched by an explicit risk rule that says "slowed"
+    // (auth/migrations/billing) gates even when the global dial is realtime. A
+    // path with no matching rule falls back to the global mode — it is NOT forced
+    // (the fallback mode is "slowed", so we must check `ruleId`, not just `mode`).
+    // Tests/docs are NOT auto-upshifted (we never silently skip the human in slowed).
+    const forceGate =
+      write && assessment !== null && assessment.ruleId !== null && assessment.mode === "slowed";
+    const willGate = write && (pacer.mode === "slowed" || forceGate);
 
     const call = store.appendEvent({
       sessionId,
@@ -141,13 +148,16 @@ export function makeCanUseTool(deps: GateDeps): CanUseTool {
     }
 
     if (write && editId !== null) {
-      const outcome = await pacer.requestGate({
-        editId,
-        toolName,
-        path: path ?? "",
-        seq: call.seq,
-        risk: risk ?? 0,
-      });
+      const outcome = await pacer.requestGate(
+        {
+          editId,
+          toolName,
+          path: path ?? "",
+          seq: call.seq,
+          risk: risk ?? 0,
+        },
+        { force: forceGate },
+      );
       // Record the resolution unless it passed straight through ('open' = realtime).
       if (outcome.state !== "open") {
         const ack = store.appendEvent({

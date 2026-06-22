@@ -1,9 +1,9 @@
-import type { GateState, GovernorEvent } from "@governor/contracts";
+import type { GateState, JigEvent } from "@agent-jig/contracts";
 import { describe, expect, it } from "vitest";
 import { buildChangeView } from "./changeView.ts";
 
 let seq = 0;
-function ev(partial: Partial<GovernorEvent> & Pick<GovernorEvent, "type">): GovernorEvent {
+function ev(partial: Partial<JigEvent> & Pick<JigEvent, "type">): JigEvent {
   seq += 1;
   return {
     id: `e${seq}`,
@@ -20,13 +20,13 @@ function ev(partial: Partial<GovernorEvent> & Pick<GovernorEvent, "type">): Gove
   };
 }
 
-function reasoning(text: string): GovernorEvent {
+function reasoning(text: string): JigEvent {
   return ev({ type: "reasoning", payload: { text } });
 }
-function edit(editId: string, path: string): GovernorEvent {
+function edit(editId: string, path: string): JigEvent {
   return ev({ type: "tool_call", toolName: "Edit", editId, payload: { file_path: path } });
 }
-function ack(editId: string, gateState: GateState): GovernorEvent {
+function ack(editId: string, gateState: GateState): JigEvent {
   return ev({ type: "ack", editId, gateState });
 }
 

@@ -1,5 +1,5 @@
 import { tmpdir } from "node:os";
-import { SqliteStorage } from "@governor/store";
+import { SqliteStorage } from "@agent-jig/store";
 import { afterEach, describe, expect, it } from "vitest";
 import { SessionManager } from "./manager.ts";
 

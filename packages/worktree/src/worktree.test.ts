@@ -67,7 +67,7 @@ describe("createWorktree", () => {
     const base = mkdtempSync(join(tmpdir(), "wt-base-"));
     const { path, branch } = createWorktree(dir, base);
     try {
-      expect(branch).toMatch(/^governor\//);
+      expect(branch).toMatch(/^jig\//);
       expect(existsSync(join(path, "a.ts"))).toBe(true); // checked out from HEAD
       const list = execFileSync("git", ["-C", dir, "worktree", "list"], { encoding: "utf8" });
       expect(list).toContain(path);

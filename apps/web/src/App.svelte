@@ -1,13 +1,38 @@
 <script lang="ts">
-import type { GovernorEvent, Session, SessionSummary } from "@governor/contracts";
-import DiffView from "./lib/DiffView.svelte";
-import { GovernorConnection } from "./lib/connection.svelte.ts";
+import type {
+  DialMode,
+  JigEvent,
+  RiskRule,
+  Session,
+  SessionConfig,
+  SessionSummary,
+} from "@agent-jig/contracts";
+import { JigConnection } from "./lib/connection.svelte.ts";
+import { toHunks } from "./lib/diff.ts";
 import { diffMode } from "./lib/diffMode.svelte.ts";
+import { countAddsDels, rangeLabel } from "./lib/fileDiff.ts";
+import FileDiff from "./lib/FileDiff.svelte";
+import FilePreview from "./lib/FilePreview.svelte";
+import ImpactMap from "./lib/ImpactMap.svelte";
+import {
+  ensureDesktopFont,
+  isTauri,
+  listSystemFontsNative,
+  notify,
+  pickFolderNative,
+} from "./lib/platform.ts";
 import { settings } from "./lib/settings.svelte.ts";
 import { theme } from "./lib/theme.svelte.ts";
 
 void theme.init(); // load custom themes + apply the saved selection's chrome
 settings.apply(); // apply persisted fonts + tab size
+
+// Desktop frameless shell: on macOS the Tauri window uses an overlay title bar
+// (native traffic lights float over the webview), so reserve a top strip and a
+// drag region. No-op in the browser / on other platforms.
+const frameless =
+  isTauri && typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
+if (frameless) document.documentElement.dataset.frameless = "";
 
 let showSettings = $state(false);
 let showTheme = $state(false);
@@ -15,18 +40,34 @@ let showTheme = $state(false);
 // Font suggestions: the machine's actual installed families when the Local Font
 // Access API is available (Chromium, on a user gesture); otherwise curated lists.
 let installedFonts = $state<string[]>([]);
-const fontApiAvailable = typeof window !== "undefined" && "queryLocalFonts" in window;
+// The desktop shell exposes real installed fonts via a Rust command; in the
+// browser we use Chromium's Local Font Access API (on a user gesture) if present.
+const fontApiAvailable = isTauri || (typeof window !== "undefined" && "queryLocalFonts" in window);
 async function detectFonts() {
-  const q = (window as unknown as { queryLocalFonts?: () => Promise<Array<{ family: string }>> })
-    .queryLocalFonts;
-  if (!q) return;
   try {
+    if (isTauri) {
+      installedFonts = await listSystemFontsNative();
+      return;
+    }
+    const q = (window as unknown as { queryLocalFonts?: () => Promise<Array<{ family: string }>> })
+      .queryLocalFonts;
+    if (!q) return;
     const data = await q.call(window);
     installedFonts = [...new Set(data.map((f) => f.family))].sort((a, b) => a.localeCompare(b));
   } catch {
     /* permission denied / unavailable — keep the curated suggestions */
   }
 }
+// On the desktop there's no permission gate, so load the real font list eagerly.
+if (isTauri) void detectFonts();
+// WKWebView can't render arbitrary installed fonts via `font-family`; register
+// the selected UI/code fonts as FontFaces so the choice actually takes effect.
+// Re-runs whenever the selection changes.
+$effect(() => {
+  if (!isTauri) return;
+  void ensureDesktopFont(settings.uiFont);
+  void ensureDesktopFont(settings.codeFont);
+});
 let themeJson = $state("");
 let themeError = $state("");
 async function importTheme() {
@@ -40,21 +81,64 @@ async function importTheme() {
   }
 }
 
-const wsBase = import.meta.env.VITE_WS_URL ?? `ws://${location.host}`;
+// In the Tauri desktop shell the Rust host injects the live sidecar port as a
+// global before the app loads; in the browser this is absent and we use the
+// dev env var or the page origin.
+const wsBase = window.__JIG_WS_URL__ ?? import.meta.env.VITE_WS_URL ?? `ws://${location.host}`;
 const httpBase = wsBase.replace(/^ws/, "http");
 
-const conn = new GovernorConnection();
+const conn = new JigConnection();
+
+// Global governance config (risk rules, default dial, idle threshold), loaded from
+// the server and editable in Settings. Drives the idle-alert threshold.
+let config = $state<SessionConfig | null>(null);
+async function loadConfig() {
+  try {
+    config = (await (await fetch(`${httpBase}/config`)).json()) as SessionConfig;
+  } catch {
+    /* server momentarily unavailable — keep the last/empty config */
+  }
+}
+void loadConfig();
+async function saveConfig() {
+  if (!config) return;
+  try {
+    const res = await fetch(`${httpBase}/config`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(config),
+    });
+    if (!res.ok) {
+      conn.lastError = "Couldn't save governance config.";
+      return;
+    }
+    config = (await res.json()) as SessionConfig;
+  } catch {
+    conn.lastError = "Couldn't save governance config — is the server running?";
+  }
+}
+function addRiskRule() {
+  if (!config) return;
+  const rule: RiskRule = {
+    id: crypto.randomUUID(),
+    glob: "**/example/**",
+    defaultMode: "slowed",
+    risk: 0.8,
+  };
+  config.riskRules = [...config.riskRules, rule];
+}
+function removeRiskRule(id: string) {
+  if (!config) return;
+  config.riskRules = config.riskRules.filter((r) => r.id !== id);
+}
 
 let sessions = $state<SessionSummary[]>([]);
 let activeId = $state<string | null>(null);
 let sidebarOpen = $state(true);
-// Measured header height so the sticky conversation column tucks right below it
-// (the header grows when the prompt accordion is expanded).
-let headerH = $state(0);
 
 // --- Resizable / collapsible conversation column ---
-const CHAT_W_KEY = "governor:chatWidth";
-const CHAT_OPEN_KEY = "governor:chatOpen";
+const CHAT_W_KEY = "jig:chatWidth";
+const CHAT_OPEN_KEY = "jig:chatOpen";
 const CHAT_MIN = 260;
 const CHAT_MAX = 680;
 function loadChatWidth(): number {
@@ -111,7 +195,7 @@ function chatDragKey(e: KeyboardEvent) {
 }
 
 // Remember the active session across refreshes/restarts (URL hash wins, then storage).
-const ACTIVE_KEY = "governor:activeSession";
+const ACTIVE_KEY = "jig:activeSession";
 function savedActiveId(): string | null {
   const fromHash = location.hash.slice(1);
   if (fromHash) return fromHash;
@@ -175,10 +259,19 @@ $effect(() => {
   if (conn.summary) sessions = conn.summary;
 });
 
+// Auto-clear a surfaced error after a few seconds (it can also be dismissed).
+$effect(() => {
+  if (conn.lastError === null) return;
+  const t = setTimeout(() => {
+    conn.lastError = null;
+  }, 6000);
+  return () => clearTimeout(t);
+});
+
 // --- Rename / close tabs ---
 let editing = $state<string | null>(null);
 let renameText = $state("");
-function focusOnMount(node: HTMLInputElement) {
+function focusOnMount(node: HTMLInputElement | HTMLTextAreaElement) {
   node.focus();
   node.select();
 }
@@ -191,12 +284,16 @@ async function commitRename() {
   const title = renameText.trim();
   editing = null;
   if (!id || !title) return;
-  await fetch(`${httpBase}/sessions/${id}`, {
-    method: "PATCH",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ title }),
-  });
-  await loadSessions();
+  try {
+    await fetch(`${httpBase}/sessions/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    await loadSessions();
+  } catch {
+    conn.lastError = "Couldn't rename the session — is the server running?";
+  }
 }
 function renameKey(e: KeyboardEvent) {
   if (e.key === "Enter") commitRename();
@@ -205,13 +302,17 @@ function renameKey(e: KeyboardEvent) {
 async function closeTab(s: Session) {
   const label = s.title ?? s.taskPrompt;
   if (!window.confirm(`Close "${label}"?\nThis removes the session and its history.`)) return;
-  await fetch(`${httpBase}/sessions/${s.id}`, { method: "DELETE" });
-  if (s.id === activeId) activeId = null;
-  await loadSessions();
+  try {
+    await fetch(`${httpBase}/sessions/${s.id}`, { method: "DELETE" });
+    if (s.id === activeId) activeId = null;
+    await loadSessions();
+  } catch {
+    conn.lastError = "Couldn't close the session — is the server running?";
+  }
 }
 
 // --- Drag to reorder tabs (persisted locally) ---
-const ORDER_KEY = "governor:tabOrder";
+const ORDER_KEY = "jig:tabOrder";
 function loadOrder(): string[] {
   try {
     const v = JSON.parse(localStorage.getItem(ORDER_KEY) ?? "[]");
@@ -277,7 +378,7 @@ let creating = $state(false);
 let createError = $state("");
 
 // Recently-chosen repo folders, for quick re-selection (persisted locally).
-const RECENT_KEY = "governor:recentFolders";
+const RECENT_KEY = "jig:recentFolders";
 function loadRecent(): string[] {
   try {
     const v = JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]");
@@ -296,16 +397,49 @@ function rememberFolder(path: string) {
   }
 }
 
+// Remember the last-used worktree/plan toggles so a new session opens with the
+// same choices (the most recent repo is pre-selected from recentFolders).
+const NEW_OPTS_KEY = "jig:newSessionOpts";
+function loadNewOpts(): { worktree: boolean; plan: boolean } {
+  try {
+    const v = JSON.parse(localStorage.getItem(NEW_OPTS_KEY) ?? "{}");
+    return { worktree: Boolean(v.worktree), plan: Boolean(v.plan) };
+  } catch {
+    return { worktree: false, plan: false };
+  }
+}
+function saveNewOpts() {
+  try {
+    localStorage.setItem(NEW_OPTS_KEY, JSON.stringify({ worktree: newWorktree, plan: newPlan }));
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+// ⌘/Ctrl+Enter submits the New Session modal from any field.
+function newModalKey(e: KeyboardEvent) {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    e.preventDefault();
+    void createSession();
+  }
+}
+
 function openNew() {
-  newRepo = "";
+  const opts = loadNewOpts();
+  newRepo = recentFolders[0] ?? ""; // pre-select the most recent project
   newTask = "";
-  newWorktree = false;
-  newPlan = false;
+  newWorktree = opts.worktree;
+  newPlan = opts.plan;
   createError = "";
   showNew = true;
 }
 async function pickFolder() {
   try {
+    if (isTauri) {
+      const path = await pickFolderNative();
+      if (path) newRepo = path;
+      return;
+    }
     const res = await fetch(`${httpBase}/pick-folder`);
     if (!res.ok) return;
     const data = (await res.json()) as { path?: string };
@@ -339,6 +473,7 @@ async function createSession() {
     }
     const s = (await res.json()) as Session;
     rememberFolder(newRepo.trim());
+    saveNewOpts(); // remember worktree/plan choices for the next new session
     showNew = false;
     await loadSessions();
     select(s.id);
@@ -352,7 +487,30 @@ function repoName(path: string): string {
 
 const toggle = () => conn.setDial(conn.mode === "slowed" ? "realtime" : "slowed");
 
-function editEvent(editId: string): GovernorEvent | undefined {
+// --- Center workspace tabs (Observe → Understand → Steer, as three views) ---
+let centerTab = $state<"review" | "activity" | "arch">("review");
+// A blocking plan/question lives in the Review view — pull focus there so it's
+// never hidden behind another tab.
+$effect(() => {
+  if (conn.plan || conn.question) centerTab = "review";
+});
+
+// Pull the language-server registry + install state when Settings opens.
+$effect(() => {
+  if (showSettings) conn.requestLspServers();
+});
+
+// --- Sidebar session search (client-side filter over the rail) ---
+let sessionFilter = $state("");
+const visibleSessions = $derived.by(() => {
+  const q = sessionFilter.trim().toLowerCase();
+  if (!q) return orderedSessions;
+  return orderedSessions.filter((s) =>
+    `${s.title ?? ""} ${s.taskPrompt} ${s.repoPath}`.toLowerCase().includes(q),
+  );
+});
+
+function editEvent(editId: string): JigEvent | undefined {
   return conn.events.find((e) => e.editId === editId && e.type === "tool_call");
 }
 function filePath(payload: unknown): string {
@@ -363,26 +521,6 @@ function narrationFor(editId: string): string {
   return ((e?.payload ?? {}) as { text?: string }).text ?? "";
 }
 
-// Per-diff collapse in "Changes by intent". Default: expanded while you review,
-// auto-collapsed once the edit is acted on (acked/rejected). A manual toggle
-// records an override that wins from then on, so acting on *other* edits never
-// disturbs a diff you've deliberately opened or closed.
-let collapseOverride = $state<Record<string, boolean>>({});
-function isActedOn(editId: string): boolean {
-  return conn.events.some((e) => e.type === "ack" && e.editId === editId);
-}
-function isCollapsed(editId: string): boolean {
-  const override = collapseOverride[editId];
-  return override !== undefined ? override : isActedOn(editId);
-}
-function toggleCollapse(editId: string) {
-  collapseOverride[editId] = !isCollapsed(editId);
-}
-function riskLabel(r: number): "high" | "med" | "low" {
-  if (r >= 0.8) return "high";
-  if (r >= 0.4) return "med";
-  return "low";
-}
 function outOfBand(p: unknown): { attributedTo: string; files: { path: string; kind: string }[] } {
   const v = (p ?? {}) as { attributedTo?: string; files?: { path: string; kind: string }[] };
   return { attributedTo: v.attributedTo ?? "external", files: v.files ?? [] };
@@ -391,8 +529,286 @@ function text(p: unknown): string {
   return ((p ?? {}) as { text?: string }).text ?? "";
 }
 
+// --- Architecture: files touched this session, grouped into a small tree ---
+// Real data only (edits + out-of-band changes); the dependency/impact map is a
+// later LSP-backed pass. Edit count per file drives the warm "N edits" badge.
+const touchedTree = $derived.by(() => {
+  const counts = new Map<string, number>();
+  for (const e of conn.events) {
+    if (e.type === "tool_call" && e.editId) {
+      const p = filePath(e.payload);
+      if (p) counts.set(p, (counts.get(p) ?? 0) + 1);
+    } else if (e.type === "out_of_band_change") {
+      for (const f of outOfBand(e.payload).files) if (!counts.has(f.path)) counts.set(f.path, 0);
+    }
+  }
+  const byDir = new Map<string, { name: string; path: string; edits: number }[]>();
+  for (const [path, edits] of [...counts].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const slash = path.lastIndexOf("/");
+    const dir = slash >= 0 ? path.slice(0, slash + 1) : "./";
+    const name = slash >= 0 ? path.slice(slash + 1) : path;
+    (byDir.get(dir) ?? byDir.set(dir, []).get(dir))?.push({ name, path, edits });
+  }
+  return [...byDir].map(([dir, files]) => ({ dir, files }));
+});
+const touchedCount = $derived(touchedTree.reduce((n, g) => n + g.files.length, 0));
+
+// The file whose impact map is shown in the Architecture tab. Focusing one asks
+// the server for its 1-hop dependency neighborhood (computed lazily, on demand).
+let focusedFile = $state<string | null>(null);
+function focusFile(path: string): void {
+  focusedFile = path;
+  conn.requestImpact(path);
+}
+// Jump from a Review-tab edit straight to its impact map.
+function showImpactFor(path: string): void {
+  if (!path) return;
+  centerTab = "arch";
+  focusFile(path);
+}
+
+// --- Keyboard-driven review: focus a queued edit and drive ack/reject by key ---
+let focusedEditId = $state<string | null>(null);
+let showShortcuts = $state(false);
+
+// Keep the focus on a still-pending edit; default to the first when it leaves.
+$effect(() => {
+  const q = conn.queue;
+  if (q.length === 0) {
+    if (focusedEditId !== null) focusedEditId = null;
+  } else if (!q.some((e) => e.editId === focusedEditId)) {
+    focusedEditId = q[0]?.editId ?? null;
+  }
+});
+// Scroll the focused row into view as you move through the queue.
+$effect(() => {
+  if (focusedEditId === null) return;
+  document.querySelector(`[data-edit="${focusedEditId}"]`)?.scrollIntoView({ block: "nearest" });
+});
+
+/** Ack every edit in the list that is still pending (others are ignored). */
+function ackGroup(editIds: string[]) {
+  const pending = new Set(conn.queue.map((e) => e.editId));
+  for (const id of editIds) if (pending.has(id)) conn.ack(id);
+}
+function pendingInGroup(editIds: string[]): number {
+  const pending = new Set(conn.queue.map((e) => e.editId));
+  return editIds.filter((id) => pending.has(id)).length;
+}
+
+// --- Focused-edit review surface (one diff + its same-intent siblings) ---
+const sessionId = $derived(conn.session?.id ?? activeId ?? "");
+let contextOpen = $state(true); // Focus toggle: collapse the context rail
+let previewPath = $state<string | null>(null);
+let fileDiffRef = $state<{ scrollToChange: (d: 1 | -1) => void } | null>(null);
+let expandedIntents = $state<Record<string, boolean>>({}); // open groups in "Edited this session"
+
+// Leaving Review (or losing the queue) drops any open file preview.
+$effect(() => {
+  if (centerTab !== "review") previewPath = null;
+});
+
+const focusedEvent = $derived(focusedEditId ? editEvent(focusedEditId) : undefined);
+const focusedGroup = $derived(
+  focusedEditId ? conn.changeView.find((g) => g.editIds.includes(focusedEditId)) : undefined,
+);
+const siblings = $derived(focusedGroup?.editIds ?? (focusedEditId ? [focusedEditId] : []));
+const intentTitle = $derived(
+  focusedGroup?.label || (focusedEditId ? narrationFor(focusedEditId) : "") || "Pending edit",
+);
+const focusedStats = $derived(
+  focusedEvent
+    ? countAddsDels(focusedEvent.toolName ?? "", focusedEvent.payload)
+    : { adds: 0, dels: 0 },
+);
+const focusedRange = $derived(
+  focusedEvent ? rangeLabel(toHunks(focusedEvent.toolName ?? "", focusedEvent.payload)) : "",
+);
+const focusedPath = $derived(filePath(focusedEvent?.payload));
+const focusedChanges = $derived(
+  focusedEvent ? toHunks(focusedEvent.toolName ?? "", focusedEvent.payload).length : 0,
+);
+const pendingInIntent = $derived(pendingInGroup(siblings));
+const editPosInIntent = $derived.by(() => {
+  const pend = conn.queue.filter((e) => siblings.includes(e.editId)).map((e) => e.editId);
+  const i = pend.indexOf(focusedEditId ?? "");
+  return i < 0 ? 1 : i + 1;
+});
+
+function dirOf(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i >= 0 ? p.slice(0, i + 1) : "";
+}
+function baseOf(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i >= 0 ? p.slice(i + 1) : p;
+}
+/** Unique files touched by an intent group — the rail's "Edited this session". */
+function groupFiles(editIds: string[]): string[] {
+  const seen = new Set<string>();
+  for (const id of editIds) {
+    const p = filePath(editEvent(id)?.payload);
+    if (p) seen.add(p);
+  }
+  return [...seen];
+}
+function toggleIntent(id: string) {
+  expandedIntents[id] = !expandedIntents[id];
+}
+function previewFile(path: string) {
+  if (path) previewPath = path;
+}
+function previewFileEvent(ev: JigEvent) {
+  previewFile(filePath(ev.payload));
+}
+/** Click a sibling: focus it if still pending, otherwise preview its file. */
+function focusSibling(id: string) {
+  const pending = new Set(conn.queue.map((e) => e.editId));
+  if (pending.has(id)) {
+    focusedEditId = id;
+    previewPath = null;
+  } else {
+    previewPath = filePath(editEvent(id)?.payload) || null;
+  }
+}
+function statusOf(id: string): "current" | "pending" | "done" {
+  if (id === focusedEditId) return "current";
+  return conn.queue.some((e) => e.editId === id) ? "pending" : "done";
+}
+function addsDelsOf(id: string): { adds: number; dels: number } {
+  const e = editEvent(id);
+  return e ? countAddsDels(e.toolName ?? "", e.payload) : { adds: 0, dels: 0 };
+}
+// Real-time feed: edits that applied without gating (released or bypassed).
+const realtimeFeed = $derived(
+  conn.events.filter(
+    (e) => e.type === "tool_call" && (e.gateState === "released" || e.gateState === "bypassed"),
+  ),
+);
+
+// --- Inline reject-with-reason (the reason is handed to the agent to revise) ---
+let rejectingEditId = $state<string | null>(null);
+let rejectReason = $state("");
+function startReject(editId: string) {
+  rejectingEditId = editId;
+  rejectReason = "";
+}
+function confirmReject() {
+  if (rejectingEditId === null) return;
+  conn.rejectEdit(rejectingEditId, rejectReason.trim());
+  rejectingEditId = null;
+  rejectReason = "";
+}
+function cancelReject() {
+  rejectingEditId = null;
+  rejectReason = "";
+}
+
+// --- Idle alert: surface (and notify about) edits that have waited too long ---
+// The pacer stays pure; the UI owns the clock, timing each pending edit from its
+// tool_call event timestamp. gateTimeoutMs (from config) is the alert threshold.
+let now = $state(Date.now());
+setInterval(() => {
+  now = Date.now();
+}, 15000);
+const idleThreshold = $derived(config?.gateTimeoutMs ?? 30 * 60 * 1000);
+function waitedMs(editId: string): number {
+  const ts = editEvent(editId)?.ts;
+  return ts ? now - ts : 0;
+}
+function waitedLabel(ms: number): string {
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return "";
+  if (mins < 60) return `waited ${mins}m`;
+  return `waited ${Math.floor(mins / 60)}h ${mins % 60}m`;
+}
+const oldestIdle = $derived(
+  conn.queue.map((e) => waitedMs(e.editId)).reduce((a, b) => Math.max(a, b), 0),
+);
+// Notify once per edit when it crosses the threshold (pull an AFK reviewer back).
+const notified = new Set<string>();
+$effect(() => {
+  for (const edit of conn.queue) {
+    if (waitedMs(edit.editId) >= idleThreshold && !notified.has(edit.editId)) {
+      notified.add(edit.editId);
+      void notify("Jig — an edit is waiting", `${edit.path} needs your review.`);
+    }
+  }
+});
+
+/** True while a modal/overlay or the agent owns the keyboard — review keys defer. */
+function reviewBlocked(): boolean {
+  return (
+    paletteOpen ||
+    showNew ||
+    showSettings ||
+    showTheme ||
+    showShortcuts ||
+    editing !== null ||
+    rejectingEditId !== null ||
+    conn.question !== null ||
+    conn.plan !== null
+  );
+}
+function isTyping(e: KeyboardEvent): boolean {
+  const el = e.target as HTMLElement | null;
+  if (!el) return false;
+  return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable;
+}
+
+/** The review hotkeys, applied to the focused queue edit. Returns true if handled. */
+function reviewKey(e: KeyboardEvent): boolean {
+  const q = conn.queue;
+  if (q.length === 0) return false;
+  const idx = Math.max(
+    0,
+    q.findIndex((x) => x.editId === focusedEditId),
+  );
+  const cur = q[idx];
+  switch (e.key) {
+    case "j":
+    case "ArrowDown":
+      focusedEditId = q[Math.min(idx + 1, q.length - 1)]?.editId ?? null;
+      return true;
+    case "k":
+    case "ArrowUp":
+      focusedEditId = q[Math.max(idx - 1, 0)]?.editId ?? null;
+      return true;
+    case "a":
+      if (cur) conn.ack(cur.editId);
+      return true;
+    case "A": // shift+a — ack the whole queue
+      ackGroup(q.map((x) => x.editId));
+      return true;
+    case "r":
+      if (cur) startReject(cur.editId);
+      return true;
+    case "n":
+    case " ":
+      fileDiffRef?.scrollToChange(1);
+      return true;
+    case "p":
+      fileDiffRef?.scrollToChange(-1);
+      return true;
+    case "f":
+      contextOpen = !contextOpen;
+      return true;
+    default:
+      return false;
+  }
+}
+
 // --- Conversation: ask the sidecar, or steer the agent ---
 let message = $state("");
+// A directive can be anchored to a specific edit ("Re: your edit to X — …").
+let anchorEditId = $state<string | null>(null);
+const anchorPath = $derived(anchorEditId ? filePath(editEvent(anchorEditId)?.payload) : "");
+function anchorTo(editId: string) {
+  anchorEditId = editId;
+  setChatOpen(true);
+}
+// A session whose agent has finished/stopped: sending a directive resumes it.
+const stopped = $derived(conn.session != null && conn.session.status !== "running");
 function ask() {
   const t = message.trim();
   if (!t) return;
@@ -402,8 +818,9 @@ function ask() {
 function steer() {
   const t = message.trim();
   if (!t) return;
-  conn.sendDirective(t);
+  conn.sendDirective(t, anchorEditId);
   message = "";
+  anchorEditId = null;
 }
 
 // --- Answering the agent's AskUserQuestion ---
@@ -580,10 +997,52 @@ function paletteKey(e: KeyboardEvent) {
     if (c) runCommand(c);
   }
 }
+// --- Quick-nav: ⌘/Ctrl+1–3 switch main tabs, ⌥/Alt+1–9 switch sessions. While
+// the modifier is held we show number hints on the targets (cleared on key-up or
+// when the window loses focus). `code` (Digit1…) is used so ⌥ remapping the key
+// on macOS doesn't matter. ---
+const CENTER_TABS = ["review", "activity", "arch"] as const;
+let cmdHints = $state(false);
+let altHints = $state(false);
+function trackModifiers(e: KeyboardEvent): void {
+  cmdHints = e.metaKey || e.ctrlKey;
+  altHints = e.altKey;
+}
+function clearHints(): void {
+  cmdHints = false;
+  altHints = false;
+}
+
 function onGlobalKey(e: KeyboardEvent) {
+  trackModifiers(e);
+  const digit = /^Digit([1-9])$/.exec(e.code);
+  if (digit) {
+    const idx = Number(digit[1]) - 1;
+    if ((e.metaKey || e.ctrlKey) && !e.altKey) {
+      const tab = CENTER_TABS[idx];
+      if (tab) {
+        e.preventDefault();
+        centerTab = tab;
+      }
+      return;
+    }
+    if (e.altKey && !(e.metaKey || e.ctrlKey)) {
+      const s = visibleSessions[idx];
+      if (s) {
+        e.preventDefault();
+        select(s.id);
+      }
+      return;
+    }
+  }
   if ((e.metaKey || e.ctrlKey) && (e.key === "p" || e.key === "k")) {
     e.preventDefault();
     openPalette();
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && (e.key === "n" || e.key === "N")) {
+    e.preventDefault();
+    openNew();
     return;
   }
   if (e.key === "Escape") {
@@ -592,26 +1051,54 @@ function onGlobalKey(e: KeyboardEvent) {
       else closePalette();
       return;
     }
+    if (rejectingEditId !== null) {
+      cancelReject();
+      return;
+    }
+    if (showShortcuts) {
+      showShortcuts = false;
+      return;
+    }
+    // The theme importer sits above Settings; close it first so Settings stays open.
+    if (showTheme) {
+      showTheme = false;
+      return;
+    }
     showNew = false;
-    showTheme = false;
     showSettings = false;
+    return;
   }
+  // Bare keystrokes drive review — but never while typing or a modal is up.
+  if (e.metaKey || e.ctrlKey || e.altKey || isTyping(e)) return;
+  if (e.key === "?") {
+    showShortcuts = !showShortcuts;
+    return;
+  }
+  if (reviewBlocked()) return;
+  if (reviewKey(e)) e.preventDefault();
 }
 </script>
 
+{#if frameless}
+  <!-- Frameless macOS title bar: a draggable strip the native traffic lights
+       overlay. The app content below is offset by --titlebar-h. -->
+  <div class="titlebar" data-tauri-drag-region></div>
+{/if}
+
 <div
   class="shell"
-  class:dragging
-  style="grid-template-columns: {sidebarOpen ? sidebarWidth : 0}px minmax(0, 1fr)"
+  class:dragging={dragging || chatDragging}
+  style="grid-template-columns: {sidebarOpen ? sidebarWidth : 0}px minmax(0, 1fr) {activeId !== null && chatOpen ? chatWidth : 0}px"
 >
-  <nav class="tabs">
-    <div class="brand">
-      <span>Governor</span>
-      <button class="icon" title="Hide sidebar" onclick={() => (sidebarOpen = false)}>‹</button>
+  <nav class="tabs" class:collapsed={!sidebarOpen}>
+    <button class="newbtn" onclick={openNew}><span class="plus">+</span> New session</button>
+    <div class="search">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><circle cx="11" cy="11" r="7" /><path d="M21 21l-4-4" /></svg>
+      <input placeholder="Search sessions" bind:value={sessionFilter} />
     </div>
-    <button class="newbtn" onclick={openNew}>+ New session</button>
-    <div class="tab-list">
-      {#each orderedSessions as s (s.id)}
+    <div class="rail-label">Active</div>
+    <div class="tab-list gv-scroll">
+      {#each visibleSessions as s, i (s.id)}
       <!-- svelte-ignore a11y_no_static_element_interactions -- drag is a pointer-only
            enhancement; the inner buttons handle keyboard select/close -->
       <div
@@ -625,6 +1112,7 @@ function onGlobalKey(e: KeyboardEvent) {
         ondrop={(e) => onDrop(e, s.id)}
         ondragend={onDragEnd}
       >
+        {#if altHints && i < 9}<span class="kbd-num tab-hint">{i + 1}</span>{/if}
         {#if editing === s.id}
           <input
             class="tab-rename"
@@ -640,9 +1128,12 @@ function onGlobalKey(e: KeyboardEvent) {
             ondblclick={() => startRename(s)}
             title="Double-click to rename"
           >
-            <span class="t-repo">{repoName(s.repoPath)}</span>
+            <span class="t-top">
+              <span class="dot {s.status}"></span>
+              <span class="t-repo">{repoName(s.repoPath)}</span>
+              <span class="t-status {s.status}">{s.status}</span>
+            </span>
             <span class="t-task">{s.title ?? s.taskPrompt}</span>
-            <span class="t-status {s.status}">{s.status}</span>
           </button>
           {#if s.awaitingPlan}
             <span class="t-badge plan" title="Plan awaiting approval">plan</span>
@@ -657,10 +1148,16 @@ function onGlobalKey(e: KeyboardEvent) {
         {/if}
       </div>
       {/each}
+      {#if visibleSessions.length === 0}
+        <p class="rail-empty">{sessionFilter.trim() ? "No matching sessions." : "No sessions yet."}</p>
+      {/if}
     </div>
 
     <div class="nav-footer">
-      <button class="settings-btn" onclick={() => (showSettings = true)}>⚙ Settings</button>
+      <button class="settings-btn" onclick={() => (showSettings = true)}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+        Settings
+      </button>
     </div>
   </nav>
 
@@ -677,242 +1174,486 @@ function onGlobalKey(e: KeyboardEvent) {
     ></button>
   {/if}
 
-  <main>
-    {#if !sidebarOpen}
-      <button class="reveal" title="Show sidebar" onclick={() => (sidebarOpen = true)}>≡</button>
-    {/if}
+  <main class:session={activeId !== null}>
     {#if activeId === null}
       <p class="empty big">No session selected. Create one to start supervising.</p>
     {:else}
-      <header class:shifted={!sidebarOpen} bind:clientHeight={headerH}>
+      <header>
         <div class="head-top">
-          <h1 class="title">{conn.session?.title ?? conn.session?.taskPrompt ?? "Session"}</h1>
+          <button
+            class="head-toggle"
+            class:on={sidebarOpen}
+            title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+            aria-label="Toggle sidebar"
+            onclick={() => (sidebarOpen = !sidebarOpen)}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" /></svg>
+          </button>
+          <div class="crumb">
+            {#if conn.session?.repoPath}
+              <span class="crumb-repo">{repoName(conn.session.repoPath)}</span>
+              <span class="crumb-sep">/</span>
+            {/if}
+            <h1 class="title">{conn.session?.title ?? conn.session?.taskPrompt ?? "Session"}</h1>
+          </div>
           <div class="head-controls">
-            <span class="conn" class:on={conn.connected}>{conn.connected ? "live" : "offline"}</span>
-            <button class="dial" class:slowed={conn.mode === "slowed"} onclick={toggle}>
-              {conn.mode === "slowed" ? "◐ Slowed" : "● Real-time"}
+            <span class="conn" class:on={conn.connected}>{conn.connected ? "live" : "reconnecting…"}</span>
+            {#if conn.session?.status === "running"}
+              <button
+                class="stop"
+                onclick={() => conn.stop()}
+                title="Stop the agent — resume any time by sending a message"
+              >■ Stop</button>
+            {:else if conn.session}
+              <span class="sess-status {conn.session.status}">{conn.session.status}</span>
+            {/if}
+            <div class="throttle-wrap">
+              <button
+                class="throttle"
+                class:slowed={conn.mode === "slowed"}
+                onclick={toggle}
+                aria-label="Toggle pacing mode"
+                title="Slowed gates each write for your approval; Real-time applies edits automatically"
+              >
+                <span class="knob"></span>
+                <span class="seg slow">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 7v5l3 2" /><circle cx="12" cy="12" r="9" /></svg>
+                  Slowed
+                </span>
+                <span class="seg rt">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M13 2L4.5 13.5H11l-1 8.5L19.5 10H13z" /></svg>
+                  Real-time
+                </span>
+              </button>
+              <span class="throttle-sub">{conn.mode === "slowed" ? "Edits pause for your approval" : "Edits apply automatically"}</span>
+            </div>
+            <button
+              class="head-toggle"
+              class:on={chatOpen}
+              title={chatOpen ? "Hide conversation" : "Show conversation"}
+              aria-label="Toggle conversation"
+              onclick={() => setChatOpen(!chatOpen)}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
             </button>
           </div>
         </div>
-        {#if conn.session?.taskPrompt}
-          <details class="prompt-acc">
-            <summary>Prompt</summary>
-            <p>{conn.session.taskPrompt}</p>
-          </details>
-        {/if}
       </header>
 
-      <div class="cols" class:dragging={chatDragging}>
-        <section class="left">
-          {#if conn.plan}
-            {@const pl = conn.plan}
-            <section class="plan">
-              <h2 class="plan-title">The agent has a plan — approve to start editing</h2>
-              <pre class="plan-body">{pl.plan}</pre>
-              <textarea
-                class="plan-reason"
-                rows="2"
-                bind:value={planReason}
-                placeholder="Request changes (feedback for the agent)…"
-              ></textarea>
-              <div class="plan-actions">
-                <button class="plan-changes" disabled={!planReason.trim()} onclick={() => requestPlanChanges(pl.id)}>
-                  Request changes
-                </button>
-                <button class="plan-approve" onclick={() => approvePlan(pl.id)}>Approve &amp; execute</button>
-              </div>
-            </section>
-          {/if}
+      <div class="ctabs">
+        <button class="ctab" class:on={centerTab === "review"} onclick={() => (centerTab = "review")}>
+          Review
+          {#if conn.queue.length > 0}<span class="ctab-badge">{conn.queue.length}</span>{/if}
+          {#if cmdHints}<span class="kbd-num">1</span>{/if}
+        </button>
+        <button class="ctab" class:on={centerTab === "activity"} onclick={() => (centerTab = "activity")}>
+          Activity
+          {#if conn.events.length > 0}<span class="ctab-count">{conn.events.length}</span>{/if}
+          {#if cmdHints}<span class="kbd-num">2</span>{/if}
+        </button>
+        <button class="ctab" class:on={centerTab === "arch"} onclick={() => (centerTab = "arch")}>
+          Architecture
+          {#if touchedCount > 0}<span class="ctab-count">{touchedCount}</span>{/if}
+          {#if cmdHints}<span class="kbd-num">3</span>{/if}
+        </button>
+      </div>
 
-          {#if conn.question}
-            {@const aq = conn.question}
-            <section class="question">
-              <h2 class="q-title">The agent is asking you</h2>
-              {#each aq.questions as q (q.question)}
-                <div class="q">
-                  <div class="q-head">
-                    <span class="q-chip">{q.header}</span>
-                    {#if q.multiSelect}<span class="q-multi">choose any</span>{/if}
-                  </div>
-                  <p class="q-text">{q.question}</p>
-                  <div class="opts">
-                    {#each q.options as opt (opt.label)}
-                      <button
-                        class="opt"
-                        class:sel={isPicked(q.question, opt.label)}
-                        onclick={() => togglePick(q.question, opt.label, q.multiSelect)}
-                      >
-                        <span class="opt-label">{opt.label}</span>
-                        {#if opt.description}<span class="opt-desc">{opt.description}</span>{/if}
-                        {#if opt.preview}<pre class="opt-preview">{opt.preview}</pre>{/if}
-                      </button>
-                    {/each}
-                  </div>
-                  <input
-                    class="q-other"
-                    placeholder="Other… (type a custom answer)"
-                    value={other[q.question] ?? ""}
-                    oninput={(e) => setOther(q.question, e.currentTarget.value)}
-                  />
-                </div>
-              {/each}
-              <button class="q-submit" disabled={!canSubmit(aq)} onclick={() => submitAnswers(aq)}>
-                Send answer{aq.questions.length > 1 ? "s" : ""} → agent
-              </button>
-            </section>
-          {/if}
-
-          <h2>Queue <span class="count">{conn.queue.length}</span></h2>
-          {#if conn.queue.length === 0}
-            <p class="empty">Nothing waiting — the agent is working, or idle.</p>
-          {:else}
-            <ul class="queue">
-              {#each conn.queue as edit (edit.editId)}
-                <li>
-                  <div class="row">
-                    <span class="risk {riskLabel(edit.risk)}">{riskLabel(edit.risk)}</span>
-                    <code>{edit.path}</code>
-                    <span class="tool">{edit.toolName}</span>
-                    <button class="reject" onclick={() => conn.rejectEdit(edit.editId)}>Reject</button>
-                    <button onclick={() => conn.ack(edit.editId)}>Ack</button>
-                  </div>
-                  <DiffView toolName={edit.toolName} payload={editEvent(edit.editId)?.payload} />
-                </li>
-              {/each}
-            </ul>
-          {/if}
-
-          <h2>Changes by intent</h2>
-          {#if conn.changeView.length === 0}
-            <p class="empty">No edits yet.</p>
-          {:else}
-            {#each conn.changeView as g (g.id)}
-              <div class="group">
-                <p class="label" title={g.label}>{g.label}</p>
-                {#if g.pattern}
-                  {@const pid = g.pattern.editIds[0] ?? ""}
-                  {@const rep = editEvent(pid)}
-                  <div class="edit">
-                    <button class="edit-head" onclick={() => toggleCollapse(pid)}>
-                      <span class="chev">{isCollapsed(pid) ? "▸" : "▾"}</span>
-                      <span class="badge">⊟ {g.pattern.count} structurally identical edits</span>
-                      <code>{filePath(rep?.payload)} + {g.pattern.count - 1} more</code>
+      <section class="left">
+          {#if centerTab === "review"}
+            {#if conn.plan}
+              {@const pl = conn.plan}
+              <div class="tab-scroll gv-scroll">
+                <section class="plan">
+                  <h2 class="plan-title">The agent has a plan — approve to start editing</h2>
+                  <pre class="plan-body">{pl.plan}</pre>
+                  <textarea
+                    class="plan-reason"
+                    rows="2"
+                    bind:value={planReason}
+                    placeholder="Request changes (feedback for the agent)…"
+                  ></textarea>
+                  <div class="plan-actions">
+                    <button class="plan-changes" disabled={!planReason.trim()} onclick={() => requestPlanChanges(pl.id)}>
+                      Request changes
                     </button>
-                    {#if narrationFor(pid)}<p class="why-line">💬 {narrationFor(pid)}</p>{/if}
-                    {#if !isCollapsed(pid)}
-                      <DiffView toolName={rep?.toolName ?? ""} payload={rep?.payload} />
-                    {/if}
+                    <button class="plan-approve" onclick={() => approvePlan(pl.id)}>Approve &amp; execute</button>
                   </div>
-                  {#each g.outliers as id (id)}
-                    {@const e = editEvent(id)}
-                    <div class="edit outlier">
-                      <button class="edit-head" onclick={() => toggleCollapse(id)}>
-                        <span class="chev">{isCollapsed(id) ? "▸" : "▾"}</span>
-                        <span class="badge warn">⚠ differs from the pattern — worth a look</span>
-                        <code>{filePath(e?.payload)}</code>
-                      </button>
-                      {#if narrationFor(id)}<p class="why-line">💬 {narrationFor(id)}</p>{/if}
-                      {#if !isCollapsed(id)}<DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />{/if}
+                </section>
+              </div>
+            {:else if conn.question}
+              {@const aq = conn.question}
+              <div class="tab-scroll gv-scroll">
+                <section class="question">
+                  <h2 class="q-title">The agent is asking you</h2>
+                  {#each aq.questions as q (q.question)}
+                    <div class="q">
+                      <div class="q-head">
+                        <span class="q-chip">{q.header}</span>
+                        {#if q.multiSelect}<span class="q-multi">choose any</span>{/if}
+                      </div>
+                      <p class="q-text">{q.question}</p>
+                      <div class="opts">
+                        {#each q.options as opt (opt.label)}
+                          <button
+                            class="opt"
+                            class:sel={isPicked(q.question, opt.label)}
+                            onclick={() => togglePick(q.question, opt.label, q.multiSelect)}
+                          >
+                            <span class="opt-label">{opt.label}</span>
+                            {#if opt.description}<span class="opt-desc">{opt.description}</span>{/if}
+                            {#if opt.preview}<pre class="opt-preview">{opt.preview}</pre>{/if}
+                          </button>
+                        {/each}
+                      </div>
+                      <input
+                        class="q-other"
+                        placeholder="Other… (type a custom answer)"
+                        value={other[q.question] ?? ""}
+                        oninput={(e) => setOther(q.question, e.currentTarget.value)}
+                      />
                     </div>
                   {/each}
-                {:else}
-                  {#each g.editIds as id (id)}
-                    {@const e = editEvent(id)}
-                    <div class="edit">
-                      <button class="edit-head" onclick={() => toggleCollapse(id)}>
-                        <span class="chev">{isCollapsed(id) ? "▸" : "▾"}</span>
-                        <code>{filePath(e?.payload)}</code>
-                      </button>
-                      {#if narrationFor(id)}<p class="why-line">💬 {narrationFor(id)}</p>{/if}
-                      {#if !isCollapsed(id)}<DiffView toolName={e?.toolName ?? ""} payload={e?.payload} />{/if}
+                  <button class="q-submit" disabled={!canSubmit(aq)} onclick={() => submitAnswers(aq)}>
+                    Send answer{aq.questions.length > 1 ? "s" : ""} → agent
+                  </button>
+                </section>
+              </div>
+            {:else}
+              <div class="review-wrap">
+                <!-- ===== Main review surface: one focused diff, its own scroll ===== -->
+                <div class="surface" class:full={!contextOpen}>
+                  {#if previewPath}
+                    <FilePreview path={previewPath} base={httpBase} {sessionId} onClose={() => (previewPath = null)} />
+                  {:else if conn.mode === "slowed" && conn.queue.length > 0 && focusedEvent}
+                    <div class="surf-head">
+                      <div class="sh-top">
+                        <span class="gate-pill"><span class="blip"></span>EDIT GATED</span>
+                        <span class="sh-pos">edit {editPosInIntent} / {pendingInIntent} in this intent</span>
+                        <div class="sh-tools">
+                          <div class="seg-group">
+                            <button class="seg" class:on={diffMode.mode === "unified"} onclick={() => diffMode.set("unified")}>Unified</button>
+                            <button class="seg" class:on={diffMode.mode === "split"} onclick={() => diffMode.set("split")}>Split</button>
+                          </div>
+                          <button class="focus-btn" class:on={!contextOpen} title="Focus — hide the context panel (f)" onclick={() => (contextOpen = !contextOpen)}>
+                            {contextOpen ? "Focus" : "Context"}
+                          </button>
+                          <button class="kbd-hint" title="Keyboard shortcuts" onclick={() => (showShortcuts = true)}>?</button>
+                        </div>
+                      </div>
+                      {#if oldestIdle >= idleThreshold}
+                        <div class="idle-banner" role="alert">
+                          ⏳ An edit has {waitedLabel(oldestIdle)} — the agent is blocked until you act on it.
+                        </div>
+                      {/if}
+                      <div class="sh-title">{intentTitle}</div>
+                      <div class="sh-file">
+                        <span class="sh-dir">{dirOf(focusedPath)}</span><span class="sh-name">{baseOf(focusedPath)}</span>
+                        {#if focusedRange}<span class="sh-range">{focusedRange}</span>{/if}
+                        <span class="sh-stats"><span class="add">+{focusedStats.adds}</span><span class="del">−{focusedStats.dels}</span></span>
+                      </div>
                     </div>
-                  {/each}
+
+                    {#key focusedEditId}
+                      <FileDiff
+                        bind:this={fileDiffRef}
+                        toolName={focusedEvent.toolName ?? ""}
+                        payload={focusedEvent.payload}
+                        path={focusedPath}
+                        base={httpBase}
+                        {sessionId}
+                      />
+                    {/key}
+
+                    {#if rejectingEditId === focusedEditId}
+                      <form class="surf-reject" onsubmit={(e) => { e.preventDefault(); confirmReject(); }}>
+                        <input
+                          use:focusOnMount
+                          bind:value={rejectReason}
+                          placeholder="Reason for the agent (optional) — Enter to reject, Esc to cancel"
+                          onkeydown={(e) => { if (e.key === "Escape") cancelReject(); }}
+                        />
+                        <button type="submit" class="reject">Reject</button>
+                        <button type="button" onclick={cancelReject}>Cancel</button>
+                      </form>
+                    {/if}
+
+                    <div class="surf-foot">
+                      <div class="foot-nav">
+                        <button class="navb" title="Previous change (p)" onclick={() => fileDiffRef?.scrollToChange(-1)} aria-label="Previous change">↑</button>
+                        <button class="navb" title="Next change (n)" onclick={() => fileDiffRef?.scrollToChange(1)} aria-label="Next change">↓</button>
+                        <span class="foot-count">{focusedChanges} change{focusedChanges === 1 ? "" : "s"}</span>
+                      </div>
+                      <div class="foot-actions">
+                        <button class="steer-this" title="Steer the agent about this edit" onclick={() => focusedEditId && anchorTo(focusedEditId)}>⟲ Steer</button>
+                        {#if pendingInIntent > 1}
+                          <button class="approve-all" onclick={() => ackGroup(siblings)}>Approve all {pendingInIntent}</button>
+                        {/if}
+                        <button class="reject" onclick={() => focusedEditId && startReject(focusedEditId)}>Reject <span class="kbd">⌘⌫</span></button>
+                        <button class="approve" onclick={() => focusedEditId && conn.ack(focusedEditId)}>Approve <span class="kbd">⌘↵</span></button>
+                      </div>
+                    </div>
+                  {:else if conn.mode === "realtime"}
+                    <div class="feed gv-scroll">
+                      <div class="feed-head">
+                        <span class="rt-pill"><span class="blip"></span>REAL-TIME</span>
+                        <span class="feed-note">Edits apply automatically — switch to Slowed to gate them.</span>
+                      </div>
+                      {#if realtimeFeed.length === 0}
+                        <p class="empty">No edits applied yet.</p>
+                      {:else}
+                        {#each realtimeFeed as ev (ev.id)}
+                          {@const st = countAddsDels(ev.toolName ?? "", ev.payload)}
+                          <button class="feed-row" onclick={() => previewFileEvent(ev)}>
+                            <span class="feed-applied">✓ APPLIED</span>
+                            <code class="feed-file">{baseOf(filePath(ev.payload))}</code>
+                            <span class="feed-tool">{ev.toolName}</span>
+                            <span class="feed-stats"><span class="add">+{st.adds}</span><span class="del">−{st.dels}</span></span>
+                          </button>
+                        {/each}
+                      {/if}
+                    </div>
+                  {:else}
+                    <div class="caught-up">
+                      <div class="cu-check">✓</div>
+                      <div class="cu-title">All edits reviewed</div>
+                      <p class="cu-body">The agent is running — the next gated edit will appear here.</p>
+                    </div>
+                  {/if}
+                </div>
+
+                <!-- ===== Context rail: Related / Impact / Edited this session ===== -->
+                {#if contextOpen && !previewPath}
+                  <aside class="ctx-rail gv-scroll">
+                    {#if focusedEvent && siblings.length > 0}
+                      <div class="rail-h">Related · same intent</div>
+                      {#each siblings as id (id)}
+                        {@const e = editEvent(id)}
+                        {@const st = addsDelsOf(id)}
+                        <button class="sib" class:current={statusOf(id) === "current"} onclick={() => focusSibling(id)}>
+                          <span class="sib-dot {statusOf(id)}"></span>
+                          <span class="sib-label">{baseOf(filePath(e?.payload))}</span>
+                          <span class="sib-stats"><span class="add">+{st.adds}</span><span class="del">−{st.dels}</span></span>
+                        </button>
+                      {/each}
+                    {/if}
+
+                    <div class="rail-h row">
+                      Impact
+                      <button class="rail-link" onclick={() => showImpactFor(filePath(e?.payload))}>Map →</button>
+                    </div>
+                    <p class="rail-note">See what this file's changes ripple to — who imports it, what it imports.</p>
+
+                    <div class="rail-h">Edited this session</div>
+                    {#if conn.changeView.length === 0}
+                      <p class="rail-note">No edits yet.</p>
+                    {:else}
+                      {#each conn.changeView as g (g.id)}
+                        {@const files = groupFiles(g.editIds)}
+                        <div class="intent">
+                          <button class="intent-head" onclick={() => toggleIntent(g.id)}>
+                            <span class="chev">{expandedIntents[g.id] ? "▾" : "▸"}</span>
+                            <span class="intent-label" title={g.label}>{g.label}</span>
+                            <span class="intent-count">{files.length}</span>
+                          </button>
+                          {#if expandedIntents[g.id]}
+                            {#each files as f (f)}
+                              <button class="intent-file" onclick={() => previewFile(f)}>
+                                <span class="if-name">{baseOf(f)}</span>
+                                <span class="if-dir">{dirOf(f)}</span>
+                              </button>
+                            {/each}
+                          {/if}
+                        </div>
+                      {/each}
+                    {/if}
+                  </aside>
                 {/if}
               </div>
-            {/each}
+            {/if}
           {/if}
 
-          <details class="history">
-            <summary>History · {conn.events.length} events</summary>
-            <ol>
+          {#if centerTab === "activity"}
+            <div class="tab-scroll gv-scroll">
+            <ol class="timeline">
+              {#if conn.events.length === 0}
+                <li class="empty">No activity yet — the agent hasn't acted.</li>
+              {/if}
               {#each conn.events as ev (ev.id)}
                 {#if ev.type === "out_of_band_change"}
-                  <li class="oob">
+                  <li class="tl oob">
+                    <span class="tl-dot warn"></span>
+                    <div class="tl-body">
+                      <span class="tl-title warn">⚠ changed outside the agent <span class="tl-tag">{outOfBand(ev.payload).attributedTo}</span></span>
+                      <span class="tl-text">{outOfBand(ev.payload).files.map((f) => f.path).join(", ")}</span>
+                    </div>
                     <span class="seq">#{ev.seq}</span>
-                    <span class="warn">⚠ changed outside the agent ({outOfBand(ev.payload).attributedTo})</span>
-                    <span class="files">{outOfBand(ev.payload).files.map((f) => f.path).join(", ")}</span>
                   </li>
                 {:else if ev.type === "reasoning"}
-                  <li class="reason"><span class="seq">#{ev.seq}</span><span class="why">{text(ev.payload)}</span></li>
-                {:else if ev.type === "directive"}
-                  <li class="directive"><span class="seq">#{ev.seq}</span><span class="arrow">→ steer</span><span class="dtext">{text(ev.payload)}</span></li>
-                {:else}
-                  <li>
+                  <li class="tl reason">
+                    <span class="tl-dot"></span>
+                    <div class="tl-body">
+                      <span class="tl-title muted">Reasoning</span>
+                      <span class="tl-text why">{text(ev.payload)}</span>
+                    </div>
                     <span class="seq">#{ev.seq}</span>
-                    <span class="etype">{ev.type}</span>
-                    {#if ev.toolName}<span class="tool">{ev.toolName}</span>{/if}
-                    {#if ev.gateState}<span class="gate {ev.gateState}">{ev.gateState}</span>{/if}
+                  </li>
+                {:else if ev.type === "directive"}
+                  <li class="tl directive">
+                    <span class="tl-dot accent"></span>
+                    <div class="tl-body">
+                      <span class="tl-title accent">→ Steer</span>
+                      <span class="tl-text">{text(ev.payload)}</span>
+                    </div>
+                    <span class="seq">#{ev.seq}</span>
+                  </li>
+                {:else}
+                  <li class="tl">
+                    <span class="tl-dot {ev.gateState ?? ''}"></span>
+                    <div class="tl-body">
+                      <span class="tl-title">
+                        {ev.type}
+                        {#if ev.toolName}<span class="tool">{ev.toolName}</span>{/if}
+                        {#if ev.gateState}<span class="gate {ev.gateState}">{ev.gateState}</span>{/if}
+                      </span>
+                    </div>
+                    <span class="seq">#{ev.seq}</span>
                   </li>
                 {/if}
               {/each}
             </ol>
-          </details>
-        </section>
-
-        {#if chatOpen}
-          <button
-            class="cdivider"
-            class:dragging={chatDragging}
-            aria-label="Resize conversation"
-            style="top: {headerH + 12}px; height: calc(100dvh - {headerH + 24}px)"
-            onpointerdown={chatDragStart}
-            onpointermove={chatDragMove}
-            onpointerup={chatDragEnd}
-            onkeydown={chatDragKey}
-          ></button>
-          <aside
-            class="right"
-            class:dragging={chatDragging}
-            style="top: {headerH + 12}px; width: {chatWidth}px"
-          >
-          <div class="chat-head">
-            <h2>Conversation</h2>
-            <button class="icon" title="Collapse conversation" onclick={() => setChatOpen(false)}>›</button>
-          </div>
-          <div class="chat">
-            {#if conn.conversation.length === 0}
-              <p class="empty">Ask about provenance, or steer the agent.</p>
-            {/if}
-            {#each conn.conversation as m, i (i)}
-              <div class="msg {m.role}">
-                {#if m.role === "sidecar"}<span class="tag">sidecar</span>{/if}
-                {#if m.role === "steer"}<span class="tag steer">→ sent to agent</span>{/if}
-                {m.text}
-              </div>
-            {/each}
-          </div>
-          <form class="compose" onsubmit={(e) => { e.preventDefault(); steer(); }}>
-            <input type="text" bind:value={message} placeholder="Ask a question, or steer the agent…" />
-            <div class="actions">
-              <button type="button" class="ask" onclick={ask}>Ask</button>
-              <button type="submit" class="steer">Steer</button>
             </div>
-          </form>
-          </aside>
-        {:else}
-          <button
-            class="chat-reveal"
-            style="top: {headerH + 12}px"
-            title="Show conversation"
-            onclick={() => setChatOpen(true)}
-          >‹ Chat</button>
-        {/if}
-      </div>
+          {/if}
+
+          {#if centerTab === "arch"}
+            <div class="arch-split">
+              <div class="arch-rail gv-scroll">
+                <div class="arch-head">Touched this session <span class="count">{touchedCount}</span></div>
+                {#if touchedCount === 0}
+                  <p class="empty">No files touched yet.</p>
+                {:else}
+                  <div class="arch-tree">
+                    {#each touchedTree as g (g.dir)}
+                      <div class="arch-dir">{g.dir}</div>
+                      {#each g.files as f (f.path)}
+                        <button
+                          class="arch-file"
+                          class:edited={f.edits > 0}
+                          class:focused={focusedFile === f.path}
+                          onclick={() => focusFile(f.path)}
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" /></svg>
+                          <span class="arch-name">{f.name}</span>
+                          {#if f.edits > 0}<span class="arch-edits">{f.edits} edit{f.edits > 1 ? "s" : ""}</span>{/if}
+                        </button>
+                      {/each}
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+              <ImpactMap
+                map={conn.impactMap}
+                loading={conn.impactLoading}
+                onSelect={focusFile}
+                onInstall={(serverId) => focusedFile && conn.installLsp(serverId, focusedFile)}
+              />
+            </div>
+          {/if}
+        </section>
     {/if}
   </main>
+
+  <!-- Conversation: a top-level full-height column on the right, so the workspace
+       header spans only the center — the chat is its own pane, not under it. -->
+  {#if activeId !== null}
+    {#if chatOpen}
+      <button
+        class="cdivider"
+        class:dragging={chatDragging}
+        aria-label="Resize conversation"
+        style="right: {chatWidth}px"
+        onpointerdown={chatDragStart}
+        onpointermove={chatDragMove}
+        onpointerup={chatDragEnd}
+        onkeydown={chatDragKey}
+      ></button>
+      <aside class="right" class:dragging={chatDragging}>
+        <div class="chat-head">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+          <h2>Conversation</h2>
+        </div>
+        <div class="chat gv-scroll">
+          {#if conn.session?.taskPrompt}
+            <div class="msg you">
+              <span class="tag">you · task</span>
+              {conn.session.taskPrompt}
+            </div>
+          {/if}
+          {#each conn.conversation as m, i (i)}
+            <div class="msg {m.role}">
+              {#if m.role === "sidecar"}<span class="tag">sidecar</span>{/if}
+              {#if m.role === "steer"}<span class="tag steer">→ sent to agent</span>{/if}
+              {m.text}
+            </div>
+          {/each}
+        </div>
+        <form class="compose" onsubmit={(e) => { e.preventDefault(); steer(); }}>
+          {#if stopped}
+            <p class="resume-hint">Stopped — send a message to resume where the agent left off.</p>
+          {/if}
+          {#if anchorEditId}
+            <div class="anchor-chip">
+              <span>Re: <code>{anchorPath || "this edit"}</code></span>
+              <button type="button" aria-label="Clear anchor" onclick={() => (anchorEditId = null)}>✕</button>
+            </div>
+          {/if}
+          <div class="compose-card">
+            <input
+              type="text"
+              bind:value={message}
+              placeholder={stopped ? "Send a message to resume…" : "Ask a question, or steer the agent…"}
+            />
+            <div class="actions">
+              <button type="button" class="ask" onclick={ask}>Ask</button>
+              <button type="submit" class="send">{stopped ? "Resume" : "Send"}</button>
+            </div>
+          </div>
+        </form>
+      </aside>
+    {/if}
+  {/if}
 </div>
 
-<svelte:window onkeydown={onGlobalKey} />
+<svelte:window onkeydown={onGlobalKey} onkeyup={trackModifiers} onblur={clearHints} />
+
+{#if conn.lastError}
+  <div class="toast" role="alert">
+    <span>{conn.lastError}</span>
+    <button class="toast-x" aria-label="Dismiss" onclick={() => (conn.lastError = null)}>✕</button>
+  </div>
+{/if}
+
+{#if showShortcuts}
+  <div class="overlay">
+    <button class="backdrop" aria-label="Close" onclick={() => (showShortcuts = false)}></button>
+    <div class="shortcuts" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts">
+      <h2>Review shortcuts</h2>
+      <dl>
+        <div><dt>j / ↓</dt><dd>Next edit</dd></div>
+        <div><dt>k / ↑</dt><dd>Previous edit</dd></div>
+        <div><dt>a</dt><dd>Approve focused edit</dd></div>
+        <div><dt>shift + a</dt><dd>Approve the whole queue</dd></div>
+        <div><dt>r</dt><dd>Reject focused edit (with a reason)</dd></div>
+        <div><dt>n / p / space</dt><dd>Next / previous change in the diff</dd></div>
+        <div><dt>f</dt><dd>Focus — toggle the context panel</dd></div>
+        <div><dt>⌘1–3</dt><dd>Switch Review / Activity / Architecture</dd></div>
+        <div><dt>⌥1–9</dt><dd>Switch to session 1–9</dd></div>
+        <div><dt>⌘K / ⌘P</dt><dd>Command palette</dd></div>
+        <div><dt>⌘N</dt><dd>New session (⌘↵ to start)</dd></div>
+        <div><dt>?</dt><dd>Toggle this help</dd></div>
+      </dl>
+    </div>
+  </div>
+{/if}
 
 {#if paletteOpen}
   <div class="overlay top">
@@ -957,7 +1698,7 @@ function onGlobalKey(e: KeyboardEvent) {
 {#if showNew}
   <div class="overlay">
     <button class="backdrop" aria-label="Close" onclick={() => (showNew = false)}></button>
-    <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal" role="dialog" aria-modal="true" onkeydown={newModalKey}>
       <h3>New session</h3>
 
       <label for="repo">Repository</label>
@@ -979,7 +1720,7 @@ function onGlobalKey(e: KeyboardEvent) {
       {/if}
 
       <label for="task">Task</label>
-      <textarea id="task" rows="6" bind:value={newTask} placeholder="Describe the work — multi-line is fine…"></textarea>
+      <textarea id="task" rows="6" use:focusOnMount bind:value={newTask} placeholder="Describe the work — multi-line is fine…"></textarea>
 
       <label class="check">
         <input type="checkbox" bind:checked={newWorktree} />
@@ -995,7 +1736,7 @@ function onGlobalKey(e: KeyboardEvent) {
 
       <div class="modal-actions">
         <button type="button" onclick={() => (showNew = false)}>Cancel</button>
-        <button type="button" class="primary" disabled={creating} onclick={createSession}>
+        <button type="button" class="primary" disabled={creating} onclick={createSession} title="⌘/Ctrl+Enter">
           {creating ? "Creating…" : "Create"}
         </button>
       </div>
@@ -1004,7 +1745,8 @@ function onGlobalKey(e: KeyboardEvent) {
 {/if}
 
 {#if showTheme}
-  <div class="overlay">
+  <!-- Elevated above Settings: the importer can be opened from within the Settings modal. -->
+  <div class="overlay elevated">
     <button class="backdrop" aria-label="Close" onclick={() => (showTheme = false)}></button>
     <div class="modal" role="dialog" aria-modal="true">
       <h3>Import VSCode theme</h3>
@@ -1072,6 +1814,14 @@ function onGlobalKey(e: KeyboardEvent) {
       </div>
 
       <div class="set-row">
+        <span class="set-label">Density</span>
+        <div class="set-control">
+          <button class="set-seg" class:on={settings.density === "dense"} onclick={() => settings.setDensity("dense")}>Dense</button>
+          <button class="set-seg" class:on={settings.density === "calm"} onclick={() => settings.setDensity("calm")}>Calm</button>
+        </div>
+      </div>
+
+      <div class="set-row">
         <label for="set-codefont">Code font</label>
         <div class="set-control">
           <input id="set-codefont" list="mono-fonts" placeholder="default" value={settings.codeFont} oninput={(e) => settings.setCodeFont(e.currentTarget.value)} />
@@ -1131,6 +1881,78 @@ function onGlobalKey(e: KeyboardEvent) {
         {/if}
       </p>
 
+      {#if config}
+        <h4 class="set-section">Governance <span class="set-hint">— applies to new sessions/runs</span></h4>
+
+        <div class="set-row">
+          <span class="set-label">Default dial</span>
+          <div class="set-control">
+            <button class="set-seg" class:on={config.defaultMode === "slowed"} onclick={() => { if (config) config.defaultMode = "slowed"; }}>Slowed</button>
+            <button class="set-seg" class:on={config.defaultMode === "realtime"} onclick={() => { if (config) config.defaultMode = "realtime"; }}>Real-time</button>
+          </div>
+        </div>
+
+        <div class="set-row">
+          <label for="set-idle">Idle alert after</label>
+          <div class="set-control">
+            <input
+              id="set-idle"
+              type="number"
+              min="1"
+              value={Math.round(config.gateTimeoutMs / 60000)}
+              oninput={(e) => { if (config) config.gateTimeoutMs = Math.max(1, Number(e.currentTarget.value)) * 60000; }}
+            />
+            <span class="set-hint">min</span>
+          </div>
+        </div>
+
+        <div class="set-row rules">
+          <span class="set-label">Risk rules <span class="set-hint">glob → dial · risk</span></span>
+          <div class="rule-list">
+            {#each config.riskRules as rule (rule.id)}
+              <div class="rule-row">
+                <input class="rule-glob" bind:value={rule.glob} placeholder="**/auth/**" />
+                <select bind:value={rule.defaultMode}>
+                  <option value="slowed">slowed</option>
+                  <option value="realtime">realtime</option>
+                </select>
+                <input class="rule-risk" type="number" min="0" max="1" step="0.05" bind:value={rule.risk} />
+                <button type="button" class="rule-x" aria-label="Remove rule" onclick={() => removeRiskRule(rule.id)}>✕</button>
+              </div>
+            {/each}
+            <button type="button" class="link-btn" onclick={addRiskRule}>+ Add rule</button>
+          </div>
+        </div>
+
+        <div class="set-row">
+          <span class="set-label"></span>
+          <div class="set-control">
+            <button type="button" onclick={saveConfig}>Save governance</button>
+          </div>
+        </div>
+      {/if}
+
+      <div class="set-row col">
+        <span class="set-label">Language servers <span class="set-hint">code intelligence for the impact map</span></span>
+        <div class="lsp-list">
+          {#each conn.lspServers as s (s.serverId)}
+            <div class="lsp-row">
+              <span class="lsp-lang">{s.language}</span>
+              {#if s.status === "installed"}
+                <span class="lsp-ok">Installed</span>
+              {:else if s.status === "installable"}
+                <button type="button" class="lsp-install" disabled={s.installing} onclick={() => conn.installLsp(s.serverId)}>
+                  {s.installing ? "Installing…" : "Install"}
+                </button>
+              {:else}
+                <code class="lsp-hint" title="Run this in a terminal to install">{s.hint}</code>
+              {/if}
+            </div>
+          {/each}
+          {#if conn.lspServers.length === 0}<p class="set-hint">Loading…</p>{/if}
+        </div>
+      </div>
+
       <div class="modal-actions">
         <button type="button" class="primary" onclick={() => (showSettings = false)}>Done</button>
       </div>
@@ -1150,9 +1972,22 @@ function onGlobalKey(e: KeyboardEvent) {
     user-select: none;
     cursor: col-resize;
   }
+  /* Frameless macOS title bar: a draggable strip the native traffic lights
+     overlay. Sits above everything; app content clears it via --titlebar-h. */
+  .titlebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--titlebar-h);
+    z-index: 1000;
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--border-soft);
+    -webkit-app-region: drag;
+  }
   .resizer {
     position: absolute;
-    top: 0;
+    top: var(--titlebar-h);
     bottom: 0;
     width: 9px;
     transform: translateX(-50%);
@@ -1169,13 +2004,13 @@ function onGlobalKey(e: KeyboardEvent) {
     bottom: 0;
     left: 50%;
     width: 1px;
-    background: var(--line);
+    background: var(--border);
     transform: translateX(-50%);
     transition: background 0.15s, width 0.15s;
   }
   .resizer:hover::after,
   .resizer:focus-visible::after {
-    background: var(--accent);
+    background: var(--edge);
     width: 3px;
   }
   .resizer:focus {
@@ -1183,15 +2018,27 @@ function onGlobalKey(e: KeyboardEvent) {
   }
   .tabs {
     position: sticky;
-    top: 0;
-    height: 100dvh;
-    border-right: 1px solid var(--line);
-    padding: 16px 12px;
+    top: var(--titlebar-h);
+    height: calc(100dvh - var(--titlebar-h));
+    /* Grid items default to min-width:auto (min-content), which would keep a
+       ~20px sliver when the column collapses to 0; pin it to 0 so it fully
+       closes and clips. */
+    min-width: 0;
+    background: var(--bg-1);
+    border-right: 1px solid var(--border);
+    padding: var(--pad) var(--pad-sm);
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--gap-sm);
     overflow: hidden;
     white-space: nowrap;
+  }
+  /* Collapsed: also drop the padding + border (border-box keeps them ~19px wide
+     even at width 0) so the rail closes completely. */
+  .tabs.collapsed {
+    padding-left: 0;
+    padding-right: 0;
+    border-right-width: 0;
   }
   .tab-list {
     flex: 1;
@@ -1201,50 +2048,163 @@ function onGlobalKey(e: KeyboardEvent) {
     flex-direction: column;
     gap: 6px;
   }
-  .brand {
-    font-weight: 700;
-    letter-spacing: 0.5px;
-    padding: 4px 8px 12px;
+  /* Sidebar/conversation toggles, living in the workspace header. */
+  .head-toggle {
+    flex: none;
+    width: 30px;
+    height: 30px;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-  }
-  .icon {
-    background: transparent;
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    color: var(--muted);
+    justify-content: center;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text-3);
     cursor: pointer;
-    font: inherit;
-    line-height: 1;
-    padding: 2px 8px;
+    transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
   }
-  .icon:hover {
-    color: var(--fg);
+  .head-toggle:hover {
+    background: var(--bg-3);
+    color: var(--text);
+  }
+  .head-toggle.on {
+    color: var(--text);
   }
   .newbtn {
     background: var(--accent);
     color: var(--on-accent);
     border: 0;
-    border-radius: 6px;
-    padding: 8px;
+    border-radius: var(--radius-sm);
+    padding: var(--pad-xs) var(--pad-sm);
     cursor: pointer;
     font: inherit;
+    font-size: var(--fs-sm);
     font-weight: 600;
-    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    transition: filter 0.15s ease, transform 0.1s ease;
+  }
+  .newbtn:hover {
+    filter: brightness(1.08);
+  }
+  .newbtn:active {
+    transform: translateY(1px);
+  }
+  .newbtn .plus {
+    font-size: 14px;
+    line-height: 0;
+    font-weight: 500;
+  }
+  .search {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 7px var(--pad-sm);
+    color: var(--text-3);
+  }
+  .search:focus-within {
+    border-color: var(--accent);
+  }
+  .search input {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: 0;
+    outline: none;
+    color: var(--text);
+    font: inherit;
+    font-size: var(--fs-sm);
+  }
+  .search input::placeholder {
+    color: var(--text-3);
+  }
+  .rail-label {
+    font-size: var(--fs-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-3);
+    font-weight: 600;
+    padding: 8px 6px 2px;
+  }
+  .rail-empty {
+    color: var(--text-3);
+    font-size: var(--fs-sm);
+    font-style: italic;
+    padding: 8px;
+  }
+  .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex: none;
+    background: var(--text-3);
+  }
+  .dot.running {
+    background: var(--go);
+    box-shadow: 0 0 0 3px var(--go-dim);
+    animation: gv-pulse 1.6s ease-in-out infinite;
+  }
+  .dot.paused {
+    background: var(--warm);
+    box-shadow: 0 0 0 3px var(--warm-dim);
+  }
+  .dot.error {
+    background: var(--danger);
+    box-shadow: 0 0 0 3px var(--danger-2);
+  }
+  .t-top {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+  .t-top .t-repo {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .tab {
+    position: relative;
     display: flex;
     align-items: center;
     border: 1px solid transparent;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
+  }
+  /* Number hint chips shown while ⌘/⌥ is held (quick-nav). */
+  .kbd-num {
+    font-family: var(--code-font, monospace);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
+    padding: 2px 5px;
+    border-radius: 4px;
+    background: var(--accent);
+    color: var(--bg);
+  }
+  .ctab .kbd-num {
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .tab-hint {
+    position: absolute;
+    top: 50%;
+    right: 8px;
+    transform: translateY(-50%);
+    z-index: 2;
+    box-shadow: 0 0 0 3px var(--bg-2);
   }
   .tab:hover {
-    background: var(--panel);
+    background: var(--bg-3);
   }
   .tab.active {
-    background: var(--panel);
-    border-color: var(--accent);
+    background: var(--bg-3);
+    border-color: var(--accent-dim);
   }
   .tab.dragging {
     opacity: 0.4;
@@ -1313,7 +2273,7 @@ function onGlobalKey(e: KeyboardEvent) {
     margin: 4px;
     background: var(--bg, #0c0d12);
     border: 1px solid var(--accent);
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     padding: 6px 8px;
     color: var(--fg);
     font: inherit;
@@ -1324,14 +2284,18 @@ function onGlobalKey(e: KeyboardEvent) {
     font-size: 13px;
   }
   .t-task {
-    color: var(--muted);
-    font-size: 11px;
+    color: var(--text-2);
+    font-size: var(--fs-sm);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    padding-left: 14px;
   }
   .t-status {
-    font-size: 10px;
+    margin-left: auto;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--muted);
   }
@@ -1341,58 +2305,178 @@ function onGlobalKey(e: KeyboardEvent) {
   .t-status.error {
     color: var(--danger);
   }
+  .t-status.paused {
+    color: var(--warn);
+  }
 
   .nav-footer {
     flex-shrink: 0;
-    padding-top: 10px;
+    margin: 0 calc(-1 * var(--pad-sm));
     display: flex;
-    gap: 6px;
   }
   .settings-btn {
     flex: 1;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    color: var(--fg);
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    background: transparent;
+    border: 0;
+    border-top: 1px solid var(--border-soft);
+    color: var(--text-2);
     cursor: pointer;
     font: inherit;
-    font-size: 12px;
-    padding: 7px 8px;
+    font-size: var(--fs-sm);
+    padding: var(--pad-sm) var(--pad);
     text-align: left;
+    transition: background 0.18s ease;
   }
   .settings-btn:hover {
-    border-color: var(--accent);
+    background: var(--bg-2);
+    color: var(--text);
   }
 
   /* Settings panel */
+  .set-section {
+    margin: var(--pad) 0 var(--gap-sm);
+    padding-top: var(--pad-sm);
+    border-top: 1px solid var(--border-soft);
+    font-size: var(--fs);
+    font-weight: 600;
+  }
+  .set-row.rules {
+    align-items: start;
+  }
+  .set-row.col {
+    grid-template-columns: 1fr;
+    gap: var(--gap-sm);
+  }
+  .lsp-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .lsp-row {
+    display: flex;
+    align-items: center;
+    gap: var(--gap-sm);
+    padding: 5px var(--pad-sm);
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .lsp-lang {
+    flex: 1;
+    font-size: var(--fs-sm);
+    color: var(--fg);
+  }
+  .lsp-ok {
+    font-size: var(--fs-xs);
+    color: var(--go);
+  }
+  .lsp-install {
+    background: var(--bg-2);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    color: var(--accent);
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--fs-sm);
+    padding: 2px var(--pad-sm);
+  }
+  .lsp-install:disabled {
+    border-color: var(--border);
+    color: var(--muted);
+    cursor: default;
+  }
+  .lsp-hint {
+    font-family: var(--code-font);
+    font-size: var(--fs-xs);
+    color: var(--muted);
+    max-width: 60%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .rule-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+  }
+  .rule-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+  }
+  .rule-glob {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--fg);
+    font: inherit;
+    font-size: var(--fs-sm);
+    padding: var(--pad-xs) var(--pad-sm);
+  }
+  .rule-row select {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--fg);
+    font: inherit;
+    font-size: var(--fs-sm);
+    padding: var(--pad-xs) var(--pad-xs);
+  }
+  .rule-risk {
+    width: 56px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--fg);
+    font: inherit;
+    font-size: var(--fs-sm);
+    padding: var(--pad-xs) var(--pad-xs);
+  }
+  .rule-x {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font: inherit;
+    padding: 0 4px;
+  }
+  .rule-x:hover {
+    color: var(--danger);
+  }
   .set-row {
     display: grid;
     grid-template-columns: 110px 1fr;
-    gap: 12px;
+    gap: var(--gap);
     align-items: center;
-    margin: 12px 0;
+    margin: var(--gap) 0;
   }
   .set-row > label,
   .set-label {
     color: var(--muted);
-    font-size: 13px;
+    font-size: var(--fs);
   }
   .set-control {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--gap-sm);
     flex-wrap: wrap;
   }
   .set-control select,
   .set-control input:not([type]),
   .set-control input[type="number"] {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 6px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
     color: var(--fg);
     font: inherit;
-    font-size: 13px;
-    padding: 6px 8px;
+    font-size: var(--fs);
+    padding: var(--pad-xs) var(--pad-sm);
     min-width: 0;
   }
   .set-control input[type="number"] {
@@ -1405,24 +2489,24 @@ function onGlobalKey(e: KeyboardEvent) {
     flex: 1;
   }
   .set-control > button {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 6px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
     color: var(--fg);
     cursor: pointer;
     font: inherit;
-    font-size: 12px;
-    padding: 6px 10px;
+    font-size: var(--fs-sm);
+    padding: var(--pad-xs) var(--pad-sm);
   }
   .set-seg {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 6px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
     color: var(--muted);
     cursor: pointer;
     font: inherit;
-    font-size: 12px;
-    padding: 5px 9px;
+    font-size: var(--fs-sm);
+    padding: var(--pad-xs) var(--pad-sm);
   }
   .set-seg.on {
     color: var(--fg);
@@ -1430,7 +2514,7 @@ function onGlobalKey(e: KeyboardEvent) {
   }
   .set-hint {
     color: var(--muted);
-    font-size: 11px;
+    font-size: var(--fs-xs);
   }
   .link-btn {
     background: none;
@@ -1453,23 +2537,46 @@ function onGlobalKey(e: KeyboardEvent) {
 
   main {
     position: relative;
-    max-width: 1140px;
     width: 100%;
     margin: 0 auto;
-    padding: 0 24px 64px;
+    /* Top pad = title-bar reserve so the sticky header's natural position matches
+       its sticky `top` (no overlap with the tab bar). 0 unless frameless. */
+    padding: var(--titlebar-h) 24px 64px;
   }
-  .reveal {
-    position: fixed;
-    top: 16px;
-    left: 12px;
-    z-index: 10;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    color: var(--fg);
-    cursor: pointer;
-    font: inherit;
-    padding: 4px 10px;
+  /* With a session open the center is a fixed-height flex column: the workspace
+     header + tabs are pinned and each tab's content owns its own scroll region —
+     so the Review diff scrolls in place instead of the whole page. */
+  main.session {
+    height: calc(100dvh - var(--titlebar-h));
+    margin-top: var(--titlebar-h);
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  main.session header {
+    position: static;
+    top: auto;
+    max-height: none;
+    margin: 0;
+    flex: none;
+  }
+  main.session .ctabs {
+    flex: none;
+  }
+  main.session .left {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  /* Scrollable tab bodies (Activity, Architecture, plan/question cards). */
+  .tab-scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 16px 24px 48px;
   }
   .empty.big {
     margin-top: 80px;
@@ -1478,28 +2585,41 @@ function onGlobalKey(e: KeyboardEvent) {
   }
   header {
     position: sticky;
-    top: 0;
+    top: var(--titlebar-h);
     z-index: 20;
     max-height: 40vh;
     overflow-y: auto;
-    background: var(--bg, #0c0d12);
-    border-bottom: 1px solid var(--line);
+    background: var(--bg-1);
+    border-bottom: 1px solid var(--border-soft);
     margin: 0 -24px 0;
-    padding: 5px 24px;
-  }
-  header.shifted {
-    padding-left: 52px;
+    padding: var(--pad-sm) 24px;
   }
   .head-top {
     display: flex;
     align-items: center;
     gap: 12px;
   }
-  .title {
+  .crumb {
     flex: 1;
     min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .crumb-repo {
+    font-size: var(--fs-sm);
+    color: var(--text-3);
+    font-weight: 500;
+    flex: none;
+  }
+  .crumb-sep {
+    color: var(--text-3);
+    flex: none;
+  }
+  .title {
+    min-width: 0;
     margin: 0;
-    font-size: 15px;
+    font-size: var(--fs-lg);
     font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1511,75 +2631,671 @@ function onGlobalKey(e: KeyboardEvent) {
     gap: 12px;
     flex-shrink: 0;
   }
-  .prompt-acc {
-    margin-top: 3px;
-  }
-  .prompt-acc summary {
-    cursor: pointer;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.6px;
-    color: var(--muted);
-  }
-  .prompt-acc p {
-    margin: 8px 0 2px;
-    color: var(--muted);
-    white-space: pre-wrap;
-    border-left: 2px solid var(--line);
-    padding-left: 12px;
-  }
   .conn {
-    font-size: 11px;
+    font-size: var(--fs-xs);
     color: var(--muted);
     text-transform: uppercase;
   }
   .conn.on {
     color: var(--ok);
   }
-  .dial {
-    background: var(--panel);
+  .toast {
+    position: fixed;
+    bottom: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    max-width: 480px;
+    padding: 10px 14px;
+    background: color-mix(in srgb, var(--danger) 18%, var(--panel));
     color: var(--fg);
-    border: 1px solid var(--line);
+    border: 1px solid var(--danger);
+    border-radius: 8px;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+    font-size: 13px;
+  }
+  .toast-x {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 0 2px;
+    font-size: 13px;
+  }
+  .toast-x:hover {
+    color: var(--fg);
+  }
+  /* Jig throttle — segmented Slowed ↔ Real-time toggle with a sliding knob. */
+  .throttle-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+  }
+  .throttle {
+    position: relative;
+    width: 214px;
+    height: 38px;
+    padding: 5px;
+    display: flex;
+    align-items: center;
+    border-radius: 999px;
+    border: 1px solid var(--go-2);
+    background: var(--go-dim);
+    cursor: pointer;
+    font: inherit;
+    transition: background 0.35s ease, border-color 0.35s ease;
+  }
+  .throttle.slowed {
+    border-color: var(--warm-2);
+    background: var(--warm-dim);
+  }
+  .throttle .knob {
+    position: absolute;
+    top: 5px;
+    left: calc(50% + 0px);
+    width: calc(50% - 5px);
+    height: 28px;
+    border-radius: 999px;
+    background: var(--go);
+    box-shadow: 0 2px 10px -2px var(--go);
+    transition: left 0.34s cubic-bezier(0.34, 1.3, 0.5, 1), background 0.35s ease, box-shadow 0.35s ease;
+  }
+  .throttle.slowed .knob {
+    left: 5px;
+    background: var(--warm);
+    box-shadow: 0 2px 10px -2px var(--warm);
+  }
+  .throttle .seg {
+    position: relative;
+    z-index: 1;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    font-size: var(--fs-sm);
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    transition: color 0.3s ease;
+  }
+  .throttle .seg.slow {
+    color: var(--text-3);
+  }
+  .throttle .seg.rt {
+    color: var(--on-go);
+  }
+  .throttle.slowed .seg.slow {
+    color: var(--on-warm);
+  }
+  .throttle.slowed .seg.rt {
+    color: var(--text-3);
+  }
+  .throttle-sub {
+    font-size: var(--fs-xs);
+    font-weight: 500;
+    color: var(--go);
+    transition: color 0.3s ease;
+  }
+  .throttle.slowed ~ .throttle-sub,
+  .slowed.throttle + .throttle-sub {
+    color: var(--warm);
+  }
+  .stop {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
     border-radius: 999px;
     padding: 3px 12px;
     cursor: pointer;
     font: inherit;
     font-size: 12px;
   }
-  .dial.slowed {
-    border-color: var(--warn);
+  .stop:hover {
+    color: var(--danger);
+    border-color: var(--danger);
+  }
+  .sess-status {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--muted);
+  }
+  .sess-status.paused {
     color: var(--warn);
   }
-  .cols {
-    display: flex;
-    align-items: flex-start;
-  }
-  .cols.dragging {
-    user-select: none;
-    cursor: col-resize;
+  .sess-status.error {
+    color: var(--danger);
   }
   .left {
+    min-width: 0;
+  }
+
+  /* ===== Review surface (focused diff) + context rail ===== */
+  .review-wrap {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    overflow: hidden;
+  }
+  .surface {
     flex: 1;
     min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
   }
+  .surf-head {
+    flex: none;
+    padding: var(--pad-sm) var(--pad);
+    border-bottom: 1px solid var(--border-soft);
+    background: var(--bg);
+  }
+  .sh-top {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .sh-pos {
+    font-size: var(--fs-sm);
+    color: var(--muted);
+  }
+  .sh-tools {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .seg-group {
+    display: flex;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 2px;
+  }
+  .seg {
+    border: none;
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--muted);
+  }
+  .seg.on {
+    background: var(--accent);
+    color: var(--bg);
+  }
+  .focus-btn {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--muted);
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 5px 11px;
+    border-radius: 6px;
+  }
+  .focus-btn.on {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  .sh-title {
+    margin-top: 10px;
+    font-size: var(--fs-lg);
+    font-weight: 600;
+    color: var(--fg);
+    line-height: 1.4;
+  }
+  .sh-file {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+    font-family: var(--code-font);
+    font-size: var(--fs-sm);
+  }
+  .sh-dir {
+    color: var(--muted);
+  }
+  .sh-name {
+    color: var(--fg);
+    font-weight: 600;
+  }
+  .sh-range {
+    color: var(--muted);
+    opacity: 0.7;
+  }
+  .sh-stats {
+    display: flex;
+    gap: 8px;
+    font-weight: 600;
+  }
+  .add {
+    color: var(--ok, #4fd6a0);
+  }
+  .del {
+    color: var(--danger);
+  }
+  .surf-foot {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: var(--pad-sm) var(--pad);
+    border-top: 1px solid var(--line);
+    background: var(--bg-1);
+  }
+  .foot-nav {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .navb {
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--muted);
+    border-radius: 7px;
+    cursor: pointer;
+    font: inherit;
+  }
+  .navb:hover {
+    color: var(--fg);
+  }
+  .foot-count {
+    font-size: var(--fs-xs);
+    color: var(--muted);
+    margin-left: 4px;
+  }
+  .foot-actions {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .foot-actions .steer-this {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--fs-sm);
+    font-weight: 500;
+    padding: 8px 12px;
+  }
+  .foot-actions .steer-this:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+  }
+  .approve,
+  .approve-all,
+  .foot-actions .reject {
+    border-radius: 7px;
+    cursor: pointer;
+    font: inherit;
+    font-weight: 600;
+    font-size: var(--fs-sm);
+    padding: 8px 16px;
+    border: 1px solid transparent;
+  }
+  .approve {
+    background: var(--ok, #4fd6a0);
+    color: #06231a;
+  }
+  .approve:hover {
+    filter: brightness(1.08);
+  }
+  .approve-all {
+    background: transparent;
+    color: var(--muted);
+    border: none;
+  }
+  .approve-all:hover {
+    color: var(--fg);
+  }
+  .foot-actions .reject {
+    background: transparent;
+    color: var(--danger);
+    border-color: var(--danger);
+  }
+  .foot-actions .reject:hover {
+    background: var(--diff-del-bg, rgba(224, 108, 117, 0.12));
+  }
+  .kbd {
+    font-family: var(--code-font);
+    font-size: 10px;
+    opacity: 0.65;
+  }
+  .surf-reject {
+    flex: none;
+    display: flex;
+    gap: 8px;
+    padding: 8px var(--pad);
+    border-top: 1px solid var(--line);
+    background: var(--bg-1);
+  }
+  .surf-reject input {
+    flex: 1;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--fg);
+    font: inherit;
+    font-size: 12px;
+    padding: 6px 9px;
+  }
+  .surf-reject button {
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--fg);
+    border-radius: 6px;
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    padding: 6px 12px;
+  }
+  .surf-reject button.reject {
+    color: var(--danger);
+    border-color: var(--danger);
+  }
+
+  /* caught-up / realtime feed */
+  .caught-up {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 12px;
+    padding: 60px 20px;
+  }
+  .cu-check {
+    width: 54px;
+    height: 54px;
+    border-radius: 50%;
+    background: var(--diff-add-bg, rgba(79, 214, 160, 0.15));
+    color: var(--ok, #4fd6a0);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+  }
+  .cu-title {
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--fg);
+  }
+  .cu-body {
+    font-size: 13px;
+    color: var(--muted);
+    max-width: 360px;
+    line-height: 1.6;
+  }
+  .feed {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--pad);
+  }
+  .feed-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 14px;
+  }
+  .rt-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    background: var(--diff-add-bg, rgba(79, 214, 160, 0.15));
+    color: var(--ok, #4fd6a0);
+    border-radius: 999px;
+    padding: 4px 11px;
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .rt-pill .blip {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ok, #4fd6a0);
+  }
+  .feed-note {
+    font-size: var(--fs-sm);
+    color: var(--muted);
+  }
+  .feed-row {
+    width: 100%;
+    text-align: left;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 9px 14px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    font: inherit;
+  }
+  .feed-row:hover {
+    border-color: var(--accent);
+  }
+  .feed-applied {
+    color: var(--ok, #4fd6a0);
+    font-size: var(--fs-xs);
+    font-weight: 700;
+  }
+  .feed-file {
+    font-family: var(--code-font);
+    font-size: var(--fs-sm);
+    color: var(--fg);
+  }
+  .feed-tool {
+    font-size: var(--fs-sm);
+    color: var(--muted);
+  }
+  .feed-stats {
+    margin-left: auto;
+    display: flex;
+    gap: 8px;
+    font-family: var(--code-font);
+    font-size: var(--fs-xs);
+  }
+
+  /* context rail */
+  .ctx-rail {
+    width: 308px;
+    flex: none;
+    border-left: 1px solid var(--border-soft);
+    background: var(--bg);
+    overflow-y: auto;
+    padding: var(--pad);
+  }
+  .rail-h {
+    font-size: var(--fs-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--muted);
+    font-weight: 600;
+    margin-bottom: 9px;
+  }
+  .rail-h.row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 18px;
+  }
+  .rail-link {
+    border: none;
+    background: none;
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    color: var(--accent);
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .rail-note {
+    font-size: var(--fs-xs);
+    color: var(--muted);
+    line-height: 1.5;
+    margin: 0 0 12px;
+  }
+  .sib {
+    width: 100%;
+    text-align: left;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-bottom: 6px;
+    cursor: pointer;
+    font: inherit;
+  }
+  .sib:hover {
+    background: var(--bg-1);
+  }
+  .sib.current {
+    border-color: var(--accent);
+  }
+  .sib-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex: none;
+    background: var(--muted);
+  }
+  .sib-dot.current {
+    background: var(--warn);
+  }
+  .sib-dot.done {
+    background: var(--ok, #4fd6a0);
+  }
+  .sib-label {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .sib-stats {
+    margin-left: auto;
+    display: flex;
+    gap: 6px;
+    font-family: var(--code-font);
+    font-size: var(--fs-xs);
+  }
+  .intent {
+    margin-bottom: 4px;
+  }
+  .intent-head {
+    width: 100%;
+    text-align: left;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: none;
+    background: none;
+    cursor: pointer;
+    font: inherit;
+    padding: 6px 4px;
+    color: var(--fg);
+  }
+  .intent-head .chev {
+    color: var(--muted);
+    flex: none;
+  }
+  .intent-label {
+    font-size: var(--fs-sm);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .intent-count {
+    margin-left: auto;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--muted);
+    background: var(--panel);
+    border-radius: 999px;
+    padding: 1px 7px;
+  }
+  .intent-file {
+    width: 100%;
+    text-align: left;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    border: none;
+    background: none;
+    cursor: pointer;
+    font: inherit;
+    padding: 4px 4px 4px 24px;
+    border-radius: 6px;
+  }
+  .intent-file:hover {
+    background: var(--panel);
+  }
+  .if-name {
+    font-family: var(--code-font);
+    font-size: var(--fs-sm);
+    color: var(--fg);
+  }
+  .if-dir {
+    font-size: 10px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .right {
-    flex-shrink: 0;
+    /* A top-level full-height column (sibling of <main>), pinned like the left
+       rail so the workspace header spans only the center — the chat is its own
+       pane, not under the header. Width comes from the shell grid track,
+       resized via .cdivider. A frozen flex column: fixed head + scrolling
+       messages + pinned composer. */
+    position: sticky;
+    top: var(--titlebar-h);
+    height: calc(100dvh - var(--titlebar-h));
     min-width: 0;
-    padding-left: 16px;
-    position: sticky;
-    /* `top` and `width` are inline (measured header height + resizable width). */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--bg-1);
+    border-left: 1px solid var(--border);
   }
-  /* Draggable divider between the diff area and the conversation. */
+  /* Draggable divider between the center and the conversation column; an
+     absolute overlay centered on the column boundary (`right` is inline). */
   .cdivider {
-    flex-shrink: 0;
+    position: absolute;
+    top: var(--titlebar-h);
+    bottom: 0;
     width: 11px;
-    align-self: stretch;
-    position: sticky;
+    transform: translateX(50%);
     background: transparent;
     border: 0;
     padding: 0;
     cursor: col-resize;
-    z-index: 5;
+    z-index: 25;
   }
   .cdivider::after {
     content: "";
@@ -1588,49 +3304,40 @@ function onGlobalKey(e: KeyboardEvent) {
     bottom: 0;
     left: 50%;
     width: 1px;
-    background: var(--line);
+    background: var(--border);
     transform: translateX(-50%);
     transition: background 0.15s, width 0.15s;
   }
   .cdivider:hover::after,
   .cdivider:focus-visible::after,
   .cdivider.dragging::after {
-    background: var(--accent);
+    background: var(--edge);
     width: 3px;
   }
   .cdivider:focus {
     outline: none;
   }
   .chat-head {
+    flex: none;
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 9px;
+    padding: var(--pad-sm) var(--pad);
+    border-bottom: 1px solid var(--border-soft);
   }
-  .chat-reveal {
-    flex-shrink: 0;
-    position: sticky;
-    align-self: flex-start;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    color: var(--muted);
-    cursor: pointer;
-    font: inherit;
-    font-size: 11px;
-    padding: 8px 6px;
-    writing-mode: vertical-rl;
-  }
-  .chat-reveal:hover {
-    color: var(--fg);
-    border-color: var(--accent);
+  .chat-head h2 {
+    margin: 0;
   }
 
   h2 {
-    font-size: 12px;
+    font-size: var(--fs-sm);
     text-transform: uppercase;
     letter-spacing: 0.6px;
     color: var(--muted);
-    margin: 24px 0 10px;
+    margin: var(--pad) 0 var(--gap-sm);
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
   .count {
     color: var(--accent);
@@ -1649,13 +3356,13 @@ function onGlobalKey(e: KeyboardEvent) {
   /* --- Agent plan (ExitPlanMode) --- */
   .plan {
     border: 1px solid var(--accent);
-    border-radius: 10px;
-    padding: 14px 16px;
-    margin: 8px 0 14px;
-    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    border-radius: var(--radius);
+    padding: var(--pad-sm) var(--pad);
+    margin: var(--gap-sm) 0 var(--gap);
+    background: var(--accent-2);
   }
   .plan-title {
-    margin: 0 0 10px;
+    margin: 0 0 var(--gap-sm);
     color: var(--accent);
   }
   .plan-body {
@@ -1668,17 +3375,17 @@ function onGlobalKey(e: KeyboardEvent) {
     line-height: 1.5;
     color: var(--fg);
     background: var(--bg);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: var(--pad-xs) var(--pad-sm);
   }
   .plan-reason {
     width: 100%;
-    margin-top: 10px;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 7px 10px;
+    margin-top: var(--gap-sm);
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: var(--pad-xs) var(--pad-sm);
     color: var(--fg);
     font: inherit;
     resize: vertical;
@@ -1687,17 +3394,17 @@ function onGlobalKey(e: KeyboardEvent) {
   .plan-actions {
     display: flex;
     justify-content: flex-end;
-    gap: 8px;
-    margin-top: 8px;
+    gap: var(--gap-sm);
+    margin-top: var(--gap-sm);
   }
   .plan-changes {
     background: transparent;
-    border: 1px solid var(--line);
-    border-radius: 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
     color: var(--fg);
     cursor: pointer;
     font: inherit;
-    padding: 8px 14px;
+    padding: var(--pad-xs) var(--pad);
   }
   .plan-changes:disabled {
     opacity: 0.5;
@@ -1707,27 +3414,27 @@ function onGlobalKey(e: KeyboardEvent) {
     background: var(--accent);
     color: var(--on-accent);
     border: 0;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     cursor: pointer;
     font: inherit;
     font-weight: 600;
-    padding: 8px 16px;
+    padding: var(--pad-xs) var(--pad);
   }
 
   /* --- Agent question --- */
   .question {
     border: 1px solid var(--accent);
-    border-radius: 10px;
-    padding: 14px 16px;
-    margin: 8px 0 4px;
-    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    border-radius: var(--radius);
+    padding: var(--pad-sm) var(--pad);
+    margin: var(--gap-sm) 0 var(--gap-sm);
+    background: var(--accent-2);
   }
   .q-title {
-    margin: 0 0 10px;
+    margin: 0 0 var(--gap-sm);
     color: var(--accent);
   }
   .q {
-    margin-bottom: 14px;
+    margin-bottom: var(--gap);
   }
   .q-head {
     display: flex;
@@ -1749,23 +3456,23 @@ function onGlobalKey(e: KeyboardEvent) {
     text-transform: uppercase;
   }
   .q-text {
-    margin: 6px 0 10px;
+    margin: 6px 0 var(--gap-sm);
     font-weight: 600;
   }
   .opts {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--gap-sm);
   }
   .opt {
     display: flex;
     flex-direction: column;
     gap: 2px;
     text-align: left;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 8px 12px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: var(--pad-xs) var(--pad-sm);
     cursor: pointer;
     font: inherit;
     color: var(--fg);
@@ -1775,30 +3482,30 @@ function onGlobalKey(e: KeyboardEvent) {
   }
   .opt.sel {
     border-color: var(--accent);
-    background: color-mix(in srgb, var(--accent) 16%, var(--panel));
+    background: var(--accent-2);
   }
   .opt-label {
     font-weight: 600;
   }
   .opt-desc {
-    font-size: 12px;
+    font-size: var(--fs-sm);
     color: var(--muted);
   }
   .opt-preview {
     margin: 6px 0 0;
-    font-size: 11px;
+    font-size: var(--fs-xs);
     color: var(--muted);
     white-space: pre-wrap;
     max-height: 160px;
     overflow: auto;
   }
   .q-other {
-    margin-top: 8px;
+    margin-top: var(--gap-sm);
     width: 100%;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 7px 10px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: var(--pad-xs) var(--pad-sm);
     color: var(--fg);
     font: inherit;
     box-sizing: border-box;
@@ -1807,8 +3514,8 @@ function onGlobalKey(e: KeyboardEvent) {
     background: var(--accent);
     color: var(--on-accent);
     border: 0;
-    border-radius: 8px;
-    padding: 9px 16px;
+    border-radius: var(--radius-sm);
+    padding: var(--pad-xs) var(--pad);
     cursor: pointer;
     font: inherit;
     font-weight: 600;
@@ -1818,156 +3525,95 @@ function onGlobalKey(e: KeyboardEvent) {
     cursor: default;
   }
 
-  .queue li {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 8px 12px;
-    margin-bottom: 6px;
-  }
-  .row {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-  .row code {
-    flex: 1;
-  }
-  .row button {
-    background: var(--accent);
-    color: var(--on-accent);
-    border: 0;
-    border-radius: 6px;
-    padding: 4px 14px;
+  .kbd-hint {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    width: 20px;
+    height: 20px;
+    margin-left: 8px;
     cursor: pointer;
     font: inherit;
-    font-weight: 600;
+    font-size: 12px;
+    line-height: 1;
+    vertical-align: middle;
   }
-  .row button.reject {
-    background: transparent;
-    color: var(--danger);
-    border: 1px solid var(--danger);
+  .shortcuts {
+    position: relative;
+    z-index: 1;
+    width: 100%;
+    max-width: 420px;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--pad) var(--pad);
+    box-shadow: var(--shadow);
   }
-
-  .risk {
-    font-size: 10px;
-    text-transform: uppercase;
-    padding: 2px 6px;
-    border-radius: 4px;
-    border: 1px solid var(--line);
+  .shortcuts h2 {
+    margin: 0 0 var(--gap);
   }
-  .risk.high {
-    color: var(--danger);
-    border-color: var(--danger);
+  .shortcuts dl {
+    margin: 0;
+    display: grid;
+    gap: 8px;
   }
-  .risk.med {
-    color: var(--warn);
-    border-color: var(--warn);
+  .shortcuts dl > div {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
   }
-  .risk.low {
+  .shortcuts dt {
+    font-family: var(--code-font, monospace);
+    color: var(--accent);
+    white-space: nowrap;
+  }
+  .shortcuts dd {
+    margin: 0;
+    color: var(--muted);
+    text-align: right;
+  }
+  .idle-banner {
+    margin: var(--gap-sm) 0;
+    padding: var(--pad-xs) var(--pad-sm);
+    border-radius: var(--radius-sm);
+    background: var(--warm-dim);
+    border: 1px solid var(--warm-2);
+    color: var(--fg);
+    font-size: var(--fs);
+  }
+  .anchor-chip {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: var(--gap-sm);
+    padding: var(--pad-xs) var(--pad-sm);
+    background: var(--bg-2);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-sm);
+    font-size: var(--fs-sm);
     color: var(--muted);
   }
+  .anchor-chip code {
+    color: var(--fg);
+  }
+  .anchor-chip button {
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font: inherit;
+  }
+  .anchor-chip button:hover {
+    color: var(--fg);
+  }
+
   .tool {
     color: var(--muted);
-    font-size: 12px;
+    font-size: var(--fs-sm);
   }
 
-  .group {
-    border-left: 2px solid var(--accent);
-    padding-left: 12px;
-    margin-bottom: 18px;
-  }
-  .group .label {
-    color: var(--fg);
-    font-weight: 600;
-    margin: 0 0 8px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .group .edit {
-    margin-bottom: 8px;
-  }
-  .group .edit code {
-    color: var(--muted);
-    font-size: 12px;
-  }
-  .edit-head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    text-align: left;
-    background: transparent;
-    border: 0;
-    padding: 2px 0;
-    cursor: pointer;
-    font: inherit;
-  }
-  .edit-head .chev {
-    color: var(--accent);
-    font-size: 11px;
-    width: 12px;
-    flex-shrink: 0;
-  }
-  .edit-head .badge {
-    margin-right: 0;
-  }
-  .edit-head code {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .badge {
-    display: inline-block;
-    font-size: 11px;
-    padding: 2px 8px;
-    border-radius: 4px;
-    border: 1px solid var(--line);
-    color: var(--muted);
-    margin-right: 8px;
-  }
-  .badge.warn {
-    color: var(--warn);
-    border-color: var(--warn);
-  }
-  .edit.outlier {
-    border-left: 2px solid var(--warn);
-    padding-left: 10px;
-  }
-  .why-line {
-    color: var(--accent);
-    font-style: italic;
-    margin: 6px 0;
-    opacity: 0.9;
-  }
-
-  .history {
-    margin-top: 28px;
-    border-top: 1px solid var(--line);
-    padding-top: 8px;
-  }
-  .history summary {
-    cursor: pointer;
-    color: var(--muted);
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.6px;
-  }
-  .history li {
-    display: flex;
-    gap: 10px;
-    align-items: baseline;
-    padding: 3px 0;
-    color: var(--muted);
-  }
-  .history .seq {
-    color: var(--line);
-    min-width: 42px;
-  }
-  .history .etype {
-    color: var(--fg);
-  }
   .gate {
     font-size: 10px;
     text-transform: uppercase;
@@ -1984,52 +3630,48 @@ function onGlobalKey(e: KeyboardEvent) {
   .gate.rejected {
     color: var(--danger);
   }
-  .oob .warn {
-    color: var(--warn);
-  }
-  .reason .why {
-    color: var(--accent);
-    font-style: italic;
-    opacity: 0.85;
-  }
-  .directive .arrow {
-    color: var(--accent);
-    font-weight: 600;
-  }
 
   .chat {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    margin-bottom: 10px;
-    max-height: 60vh;
-    overflow-y: auto;
+    gap: var(--gap-sm);
+    padding: var(--pad);
   }
   .msg {
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 8px 12px;
-    max-width: 90%;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--pad-xs) var(--pad-sm);
+    max-width: 88%;
     white-space: pre-wrap;
-    font-size: 13px;
+    font-size: var(--fs-sm);
+    line-height: var(--leading);
   }
   .msg.you {
     align-self: flex-end;
-    background: var(--panel);
-  }
-  .msg.sidecar {
-    align-self: flex-start;
-    background: var(--bg);
+    background: var(--accent-2);
+    border-color: var(--accent-dim);
+    border-bottom-right-radius: 3px;
   }
   .msg.steer {
     align-self: flex-end;
-    border-color: var(--accent);
+    background: var(--accent-2);
+    border-color: var(--accent-dim);
+    border-bottom-right-radius: 3px;
+  }
+  .msg.sidecar {
+    align-self: flex-start;
+    background: var(--bg-2);
+    color: var(--text-2);
+    border-bottom-left-radius: 3px;
   }
   .tag {
     display: block;
-    font-size: 10px;
+    font-size: var(--fs-xs);
     text-transform: uppercase;
-    color: var(--muted);
+    color: var(--text-3);
     margin-bottom: 2px;
   }
   .tag.steer {
@@ -2037,39 +3679,73 @@ function onGlobalKey(e: KeyboardEvent) {
   }
 
   .compose {
+    flex: none;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: var(--gap-sm);
+    padding: var(--pad);
+    border-top: 1px solid var(--border-soft);
+  }
+  .resume-hint {
+    margin: 0;
+    font-size: var(--fs-xs);
+    color: var(--warn);
+  }
+  /* The composer is a single card holding the input + the Ask/Send buttons. */
+  .compose-card {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--pad-sm);
+    transition: border-color 0.18s ease;
+  }
+  .compose-card:focus-within {
+    border-color: var(--accent);
   }
   .compose input {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 8px 12px;
+    width: 100%;
+    background: transparent;
+    border: 0;
+    padding: var(--pad-xs) 2px;
     color: var(--fg);
     font: inherit;
+  }
+  .compose input:focus {
+    outline: none;
+  }
+  .compose input::placeholder {
+    color: var(--text-3);
   }
   .actions {
     display: flex;
-    gap: 8px;
+    gap: var(--gap-sm);
+    margin-top: var(--gap-sm);
   }
   .actions button {
     flex: 1;
-    border-radius: 8px;
-    padding: 8px 14px;
+    border-radius: var(--radius-sm);
+    padding: var(--pad-xs) var(--pad-sm);
     cursor: pointer;
     font: inherit;
+    font-weight: 600;
   }
   .actions .ask {
-    background: var(--panel);
+    background: transparent;
     color: var(--fg);
-    border: 1px solid var(--line);
+    border: 1px solid var(--border);
   }
-  .actions .steer {
+  .actions .ask:hover {
+    background: var(--bg-3);
+  }
+  .actions .send {
     background: var(--accent);
     color: var(--on-accent);
     border: 0;
-    font-weight: 600;
+    font-weight: 700;
+    transition: filter 0.15s ease;
+  }
+  .actions .send:hover {
+    filter: brightness(1.08);
   }
 
   /* --- New session modal --- */
@@ -2086,34 +3762,37 @@ function onGlobalKey(e: KeyboardEvent) {
     align-items: flex-start;
     padding-top: 12vh;
   }
+  .overlay.elevated {
+    z-index: 60;
+  }
   .palette {
     position: relative;
     z-index: 1;
     width: 100%;
     max-width: 560px;
-    background: var(--bg, #0c0d12);
-    border: 1px solid var(--line);
-    border-radius: 12px;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
     overflow: hidden;
-    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+    box-shadow: var(--shadow);
   }
   .palette-crumb {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px 14px;
-    border-bottom: 1px solid var(--line);
-    font-size: 11px;
+    padding: var(--pad-xs) var(--pad-sm);
+    border-bottom: 1px solid var(--border-soft);
+    font-size: var(--fs-xs);
     color: var(--muted);
   }
   .palette-input {
     width: 100%;
     border: 0;
-    border-bottom: 1px solid var(--line);
+    border-bottom: 1px solid var(--border-soft);
     background: transparent;
     color: var(--fg);
     font: inherit;
-    padding: 14px 16px;
+    padding: var(--pad-sm) var(--pad);
     outline: none;
   }
   .palette-list {
@@ -2128,10 +3807,10 @@ function onGlobalKey(e: KeyboardEvent) {
     text-align: left;
     background: transparent;
     border: 0;
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     color: var(--fg);
     font: inherit;
-    padding: 9px 12px;
+    padding: var(--pad-xs) var(--pad-sm);
     cursor: pointer;
     display: flex;
     justify-content: space-between;
@@ -2139,18 +3818,18 @@ function onGlobalKey(e: KeyboardEvent) {
     gap: 12px;
   }
   .palette-item.sel {
-    background: var(--panel);
+    background: var(--bg-3);
   }
   .palette-hint {
     color: var(--muted);
-    font-size: 10px;
+    font-size: var(--fs-xs);
     text-transform: uppercase;
     letter-spacing: 0.5px;
   }
   .palette-empty {
     color: var(--muted);
     font-style: italic;
-    padding: 12px;
+    padding: var(--pad-sm);
   }
   .backdrop {
     position: absolute;
@@ -2163,27 +3842,28 @@ function onGlobalKey(e: KeyboardEvent) {
   .modal {
     position: relative;
     z-index: 1;
-    background: var(--bg, #0c0d12);
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    padding: 22px 24px;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--pad) var(--pad);
     width: 100%;
     max-width: 560px;
     max-height: 86vh;
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: var(--gap-sm);
+    box-shadow: var(--shadow);
   }
   .modal h3 {
-    margin: 0 0 8px;
+    margin: 0 0 var(--gap-sm);
   }
   .modal label {
-    font-size: 12px;
+    font-size: var(--fs-sm);
     text-transform: uppercase;
     letter-spacing: 0.6px;
     color: var(--muted);
-    margin-top: 8px;
+    margin-top: var(--gap-sm);
   }
   .modal label.check {
     display: flex;
@@ -2191,70 +3871,70 @@ function onGlobalKey(e: KeyboardEvent) {
     gap: 8px;
     text-transform: none;
     letter-spacing: 0;
-    font-size: 13px;
+    font-size: var(--fs);
     color: var(--fg);
     cursor: pointer;
   }
   .repo-field {
     display: flex;
-    gap: 8px;
+    gap: var(--gap-sm);
   }
   .repo-field input {
     flex: 1;
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 8px 12px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: var(--pad-xs) var(--pad-sm);
     color: var(--fg);
     font: inherit;
     min-width: 0;
   }
   .repo-field button {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 8px 14px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: var(--pad-xs) var(--pad);
     color: var(--fg);
     cursor: pointer;
     font: inherit;
     white-space: nowrap;
   }
   .recent {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 7px 10px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: var(--pad-xs) var(--pad-sm);
     color: var(--muted);
     font: inherit;
-    font-size: 12px;
+    font-size: var(--fs-sm);
   }
   .modal textarea {
-    background: var(--panel);
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    padding: 10px 12px;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: var(--pad-sm) var(--pad-sm);
     color: var(--fg);
     font: inherit;
     resize: vertical;
   }
   .err {
     color: var(--danger);
-    font-size: 13px;
+    font-size: var(--fs);
     margin: 4px 0 0;
   }
   .modal-actions {
     display: flex;
     justify-content: flex-end;
-    gap: 8px;
-    margin-top: 12px;
+    gap: var(--gap-sm);
+    margin-top: var(--gap);
   }
   .modal-actions button {
-    border-radius: 8px;
-    padding: 8px 18px;
+    border-radius: var(--radius-sm);
+    padding: var(--pad-xs) var(--pad);
     cursor: pointer;
     font: inherit;
-    background: var(--panel);
-    border: 1px solid var(--line);
+    background: var(--bg-2);
+    border: 1px solid var(--border);
     color: var(--fg);
   }
   .modal-actions .primary {
@@ -2266,5 +3946,258 @@ function onGlobalKey(e: KeyboardEvent) {
   .modal-actions .primary:disabled {
     opacity: 0.6;
     cursor: default;
+  }
+
+  /* --- Center workspace tabs --- */
+  .ctabs {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0 24px;
+    margin: 0 -24px var(--gap);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .ctab {
+    position: relative;
+    border: 0;
+    background: none;
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--fs);
+    font-weight: 600;
+    color: var(--text-2);
+    padding: 12px 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    transition: color 0.2s ease;
+  }
+  .ctab:hover {
+    color: var(--text);
+  }
+  .ctab.on {
+    color: var(--accent);
+  }
+  .ctab.on::after {
+    content: "";
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    bottom: -1px;
+    height: 2px;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+  .ctab-badge {
+    background: var(--warm);
+    color: var(--on-warm);
+    font-size: 10px;
+    font-weight: 700;
+    border-radius: 999px;
+    min-width: 17px;
+    height: 17px;
+    padding: 0 5px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .ctab-count {
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+  }
+
+  /* --- Activity timeline --- */
+  .timeline {
+    display: flex;
+    flex-direction: column;
+    animation: gv-fade 0.3s ease;
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--pad-xs) var(--pad);
+  }
+  .tl {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+    padding: var(--pad-xs) 0;
+  }
+  .tl + .tl {
+    border-top: 1px solid var(--border-soft);
+  }
+  .tl-dot {
+    margin-top: 5px;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex: none;
+    background: var(--text-3);
+    box-shadow: 0 0 0 3px var(--bg-2);
+  }
+  .tl-dot.warn,
+  .tl-dot.pending {
+    background: var(--warm);
+  }
+  .tl-dot.accent {
+    background: var(--accent);
+  }
+  .tl-dot.released {
+    background: var(--go);
+  }
+  .tl-dot.rejected {
+    background: var(--danger);
+  }
+  .tl-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .tl-title {
+    font-size: var(--fs-sm);
+    font-weight: 700;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .tl-title.muted {
+    color: var(--text-3);
+    font-weight: 600;
+  }
+  .tl-title.warn {
+    color: var(--warm);
+  }
+  .tl-title.accent {
+    color: var(--accent);
+  }
+  .tl-text {
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+    line-height: var(--leading);
+    white-space: pre-wrap;
+  }
+  .tl-text.why {
+    color: var(--accent);
+    font-style: italic;
+    opacity: 0.9;
+  }
+  .tl-tag {
+    font-size: var(--fs-xs);
+    color: var(--text-2);
+    background: var(--bg-3);
+    border-radius: 5px;
+    padding: 1px 7px;
+    font-weight: 600;
+  }
+  .timeline .seq {
+    flex: none;
+    color: var(--text-3);
+    font-size: var(--fs-xs);
+    font-family: var(--code-font);
+  }
+
+  /* --- Architecture (touched files + impact map) --- */
+  .arch-split {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    animation: gv-fade 0.3s ease;
+  }
+  .arch-rail {
+    width: 280px;
+    flex: none;
+    border-right: 1px solid var(--border-soft);
+    padding: var(--pad);
+    overflow-y: auto;
+  }
+  .arch-head {
+    font-size: var(--fs-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--text-3);
+    font-weight: 600;
+    margin-bottom: var(--gap-sm);
+    animation: gv-fade 0.3s ease;
+  }
+  .arch-tree {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: var(--pad-xs) var(--pad);
+  }
+  .arch-dir {
+    font-family: var(--code-font);
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+    font-weight: 600;
+    padding: 8px 6px 4px;
+  }
+  .arch-file {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    width: 100%;
+    padding: 6px var(--pad-sm);
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    margin-bottom: 3px;
+    color: var(--text-3);
+    background: none;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .arch-file:hover {
+    background: var(--hover);
+  }
+  .arch-file.edited {
+    background: var(--bg-2);
+  }
+  .arch-file.focused {
+    border-color: var(--accent);
+  }
+  .arch-name {
+    font-family: var(--code-font);
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+  }
+  .arch-file.edited .arch-name {
+    color: var(--warm);
+    font-weight: 600;
+  }
+  .arch-edits {
+    margin-left: auto;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--warm);
+    background: var(--warm-dim);
+    border-radius: 999px;
+    padding: 1px 7px;
+  }
+  /* --- Gate-hero queue treatment --- */
+  .gate-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    background: var(--warm-dim);
+    color: var(--warm);
+    border: 1px solid var(--warm-2);
+    border-radius: 999px;
+    padding: 4px 11px;
+    font-size: var(--fs-sm);
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    margin-left: 4px;
+    vertical-align: middle;
+  }
+  .gate-pill .blip {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--warm);
+    animation: gv-pulse 1.6s ease-in-out infinite;
   }
 </style>

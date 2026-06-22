@@ -4,5 +4,4 @@ packages:
 
 # Allow native/post-install build scripts only for these (pnpm blocks them by default).
 allowBuilds:
-  better-sqlite3: true
   esbuild: true

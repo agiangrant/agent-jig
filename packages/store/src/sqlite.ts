@@ -1,14 +1,37 @@
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
+import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import {
   DEFAULT_CONFIG,
   type GateState,
-  type GovernorEvent,
+  type JigEvent,
   type Session,
   type SessionConfig,
   type SessionStatus,
-} from "@governor/contracts";
-import Database from "better-sqlite3";
+} from "@agent-jig/contracts";
 import type { NewEvent, NewSession, Storage } from "./types.ts";
+
+// `node:sqlite` is an experimental builtin in Node 24 that emits a one-time
+// process warning the first time it loads. Suppress only that warning (pass
+// everything else through), then load the module via `require` so the override
+// is installed first — a static `import` would instantiate the builtin during
+// linking, before any module body runs. Remove once node:sqlite stabilizes.
+const passThroughWarning = process.emitWarning.bind(process);
+process.emitWarning = ((warning: string | Error, ...rest: unknown[]) => {
+  const name =
+    warning instanceof Error
+      ? warning.name
+      : typeof rest[0] === "string"
+        ? rest[0]
+        : (rest[0] as { type?: string } | undefined)?.type;
+  const message = warning instanceof Error ? warning.message : String(warning);
+  if (name === "ExperimentalWarning" && message.includes("SQLite")) return;
+  return (passThroughWarning as (...args: unknown[]) => void)(warning, ...rest);
+}) as typeof process.emitWarning;
+
+const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as {
+  DatabaseSync: typeof DatabaseSyncType;
+};
 
 const CONFIG_KEY = "session_config";
 
@@ -72,18 +95,18 @@ interface SessionRow {
   ended_at: number | null;
 }
 
-function rowToEvent(r: EventRow): GovernorEvent {
+function rowToEvent(r: EventRow): JigEvent {
   return {
     id: r.id,
     sessionId: r.session_id,
     seq: r.seq,
     ts: r.ts,
-    type: r.type as GovernorEvent["type"],
+    type: r.type as JigEvent["type"],
     toolName: r.tool_name,
     editId: r.edit_id,
     intentGroupId: r.intent_group_id,
     risk: r.risk,
-    gateState: r.gate_state as GovernorEvent["gateState"],
+    gateState: r.gate_state as JigEvent["gateState"],
     payload: r.payload === null ? null : JSON.parse(r.payload),
   };
 }
@@ -101,15 +124,32 @@ function rowToSession(r: SessionRow): Session {
 }
 
 export class SqliteStorage implements Storage {
-  private readonly db: Database.Database;
+  private readonly db: DatabaseSyncType;
 
   /** @param path a file path, or `:memory:` for an ephemeral store. */
   constructor(path: string) {
-    this.db = new Database(path);
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("foreign_keys = ON");
+    this.db = new DatabaseSync(path);
+    this.db.exec("PRAGMA journal_mode = WAL");
+    this.db.exec("PRAGMA foreign_keys = ON");
     this.db.exec(SCHEMA);
     this.migrate();
+  }
+
+  /**
+   * Run `fn` inside a transaction. node:sqlite has no `db.transaction()` helper
+   * (better-sqlite3 did); since `DatabaseSync` is fully synchronous, a plain
+   * BEGIN/COMMIT wrapper preserves the same atomicity with no interleaving.
+   */
+  private tx<T>(fn: () => T): T {
+    this.db.exec("BEGIN");
+    try {
+      const result = fn();
+      this.db.exec("COMMIT");
+      return result;
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
   }
 
   /** Additive migrations for stores created before a column existed. */
@@ -136,9 +176,18 @@ export class SqliteStorage implements Storage {
     this.db
       .prepare(
         `INSERT INTO sessions (id, repo_path, task_prompt, title, plan_mode, status, started_at, ended_at)
-         VALUES (@id, @repoPath, @taskPrompt, @title, @planMode, @status, @startedAt, @endedAt)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run({ ...session, planMode: input.planMode ? 1 : 0 });
+      .run(
+        session.id,
+        session.repoPath,
+        session.taskPrompt,
+        session.title,
+        input.planMode ? 1 : 0,
+        session.status,
+        session.startedAt,
+        session.endedAt,
+      );
     return session;
   }
 
@@ -152,7 +201,7 @@ export class SqliteStorage implements Storage {
   listSessions(): Session[] {
     const rows = this.db
       .prepare("SELECT * FROM sessions ORDER BY started_at ASC")
-      .all() as SessionRow[];
+      .all() as unknown as SessionRow[];
     return rows.map(rowToSession);
   }
 
@@ -182,10 +231,10 @@ export class SqliteStorage implements Storage {
 
   deleteSession(id: string): void {
     // Events FK-reference sessions, so clear them first (one transaction).
-    this.db.transaction((sid: string) => {
-      this.db.prepare("DELETE FROM events WHERE session_id = ?").run(sid);
-      this.db.prepare("DELETE FROM sessions WHERE id = ?").run(sid);
-    })(id);
+    this.tx(() => {
+      this.db.prepare("DELETE FROM events WHERE session_id = ?").run(id);
+      this.db.prepare("DELETE FROM sessions WHERE id = ?").run(id);
+    });
   }
 
   setSessionTitle(id: string, title: string): void {
@@ -196,43 +245,54 @@ export class SqliteStorage implements Storage {
     this.db.prepare("UPDATE events SET gate_state = ? WHERE id = ?").run(gateState, eventId);
   }
 
-  appendEvent(event: NewEvent): GovernorEvent {
-    const insert = this.db.transaction((e: NewEvent): GovernorEvent => {
+  appendEvent(event: NewEvent): JigEvent {
+    return this.tx((): JigEvent => {
       const { seq } = this.db
         .prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM events WHERE session_id = ?")
-        .get(e.sessionId) as { seq: number };
+        .get(event.sessionId) as { seq: number };
 
-      const stored: GovernorEvent = {
+      const stored: JigEvent = {
         id: randomUUID(),
-        sessionId: e.sessionId,
+        sessionId: event.sessionId,
         seq,
         ts: Date.now(),
-        type: e.type,
-        toolName: e.toolName ?? null,
-        editId: e.editId ?? null,
-        intentGroupId: e.intentGroupId ?? null,
-        risk: e.risk ?? null,
-        gateState: e.gateState ?? null,
-        payload: e.payload ?? null,
+        type: event.type,
+        toolName: event.toolName ?? null,
+        editId: event.editId ?? null,
+        intentGroupId: event.intentGroupId ?? null,
+        risk: event.risk ?? null,
+        gateState: event.gateState ?? null,
+        payload: event.payload ?? null,
       };
 
       this.db
         .prepare(
           `INSERT INTO events
              (id, session_id, seq, ts, type, tool_name, edit_id, intent_group_id, risk, gate_state, payload)
-           VALUES (@id, @sessionId, @seq, @ts, @type, @toolName, @editId, @intentGroupId, @risk, @gateState, @payload)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run({ ...stored, payload: JSON.stringify(stored.payload ?? null) });
+        .run(
+          stored.id,
+          stored.sessionId,
+          stored.seq,
+          stored.ts,
+          stored.type,
+          stored.toolName,
+          stored.editId,
+          stored.intentGroupId,
+          stored.risk,
+          stored.gateState,
+          JSON.stringify(stored.payload ?? null),
+        );
 
       return stored;
     });
-    return insert(event);
   }
 
-  listEvents(sessionId: string): GovernorEvent[] {
+  listEvents(sessionId: string): JigEvent[] {
     const rows = this.db
       .prepare("SELECT * FROM events WHERE session_id = ? ORDER BY seq ASC")
-      .all(sessionId) as EventRow[];
+      .all(sessionId) as unknown as EventRow[];
     return rows.map(rowToEvent);
   }
 

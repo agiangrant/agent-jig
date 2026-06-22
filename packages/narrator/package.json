@@ -1,5 +1,5 @@
 {
-  "name": "@governor/narrator",
+  "name": "@agent-jig/narrator",
   "version": "0.0.0",
   "private": true,
   "type": "module",

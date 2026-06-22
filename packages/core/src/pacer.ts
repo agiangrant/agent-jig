@@ -1,4 +1,4 @@
-import type { DialMode, GateState, PendingEdit } from "@governor/contracts";
+import type { DialMode, GateState, PendingEdit } from "@agent-jig/contracts";
 
 /** How a gated tool call resolved. `rejected` carries the developer's reason. */
 export interface GateOutcome {
@@ -9,6 +9,8 @@ export interface GateOutcome {
 interface Gate {
   edit: PendingEdit;
   resolve: (outcome: GateOutcome) => void;
+  /** A high-risk edit gated even in realtime (auto-downshift) — never auto-bypassed. */
+  force: boolean;
 }
 
 /**
@@ -42,11 +44,16 @@ export class Pacer {
     return this.pending.has(editId);
   }
 
-  /** Resolves to the terminal outcome: open (realtime), released, bypassed, or rejected. */
-  requestGate(edit: PendingEdit): Promise<GateOutcome> {
-    if (this._mode === "realtime") return Promise.resolve({ state: "open" });
+  /**
+   * Resolves to the terminal outcome: open (realtime), released, bypassed, or
+   * rejected. `force` gates a high-risk edit even in realtime (auto-downshift);
+   * such an edit is held until the human acts and is not bypassed by opening the dial.
+   */
+  requestGate(edit: PendingEdit, opts?: { force?: boolean }): Promise<GateOutcome> {
+    const force = opts?.force ?? false;
+    if (this._mode === "realtime" && !force) return Promise.resolve({ state: "open" });
     return new Promise<GateOutcome>((resolve) => {
-      this.pending.set(edit.editId, { edit, resolve });
+      this.pending.set(edit.editId, { edit, resolve, force });
       this.notifyQueue();
     });
   }
@@ -74,9 +81,14 @@ export class Pacer {
   setMode(mode: DialMode): void {
     if (mode === this._mode) return;
     this._mode = mode;
+    // Opening to realtime drains the queue — except high-risk edits force-gated by
+    // auto-downshift, which stay held until the human acts on them.
     if (mode === "realtime" && this.pending.size > 0) {
-      for (const gate of this.pending.values()) gate.resolve({ state: "bypassed" });
-      this.pending.clear();
+      for (const [editId, gate] of this.pending) {
+        if (gate.force) continue;
+        gate.resolve({ state: "bypassed" });
+        this.pending.delete(editId);
+      }
       this.notifyQueue();
     }
     this.onModeChange?.(mode);

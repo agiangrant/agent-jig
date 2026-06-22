@@ -1,4 +1,4 @@
-import type { PendingEdit } from "@governor/contracts";
+import type { PendingEdit } from "@agent-jig/contracts";
 import { describe, expect, it } from "vitest";
 import { Pacer } from "./pacer.ts";
 
@@ -63,6 +63,33 @@ describe("Pacer", () => {
     await expect(g1).resolves.toEqual({ state: "bypassed" });
     await expect(g2).resolves.toEqual({ state: "bypassed" });
     expect(pacer.queue).toEqual([]);
+  });
+
+  it("force-gates a high-risk edit even in realtime, then acks", async () => {
+    const pacer = new Pacer("realtime");
+    const gate = pacer.requestGate(edit("a", 1), { force: true });
+
+    expect(await settledSoon(gate)).toBe(false);
+    expect(pacer.queue).toHaveLength(1);
+    expect(pacer.isPending("a")).toBe(true);
+
+    expect(pacer.ack("a")).toBe(true);
+    await expect(gate).resolves.toEqual({ state: "released" });
+  });
+
+  it("keeps a force-gated edit held when the dial opens to realtime", async () => {
+    const pacer = new Pacer("slowed");
+    const normal = pacer.requestGate(edit("a", 1));
+    const forced = pacer.requestGate(edit("b", 2), { force: true });
+
+    pacer.setMode("realtime");
+
+    await expect(normal).resolves.toEqual({ state: "bypassed" });
+    expect(await settledSoon(forced)).toBe(false); // still held
+    expect(pacer.queue.map((e) => e.editId)).toEqual(["b"]);
+
+    pacer.reject("b", "too risky");
+    await expect(forced).resolves.toEqual({ state: "rejected", reason: "too risky" });
   });
 
   it("acking or rejecting an unknown edit is a no-op", () => {

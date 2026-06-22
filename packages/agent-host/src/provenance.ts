@@ -1,6 +1,6 @@
-import type { OutOfBandChange } from "@governor/contracts";
-import { extractPath, isWriteClass } from "@governor/core";
-import type { Worktree } from "@governor/worktree";
+import type { OutOfBandChange } from "@agent-jig/contracts";
+import { extractPath, isWriteClass } from "@agent-jig/core";
+import type { Worktree } from "@agent-jig/worktree";
 
 export type WorktreeLike = Pick<Worktree, "detect">;
 

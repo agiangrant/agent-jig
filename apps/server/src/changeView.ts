@@ -1,6 +1,6 @@
-import type { ChangeView, GovernorEvent } from "@governor/contracts";
-import { groupByIntent } from "@governor/core";
-import type { EditForAnalysis, StructuralAnalyzer } from "@governor/structural";
+import type { ChangeView, JigEvent } from "@agent-jig/contracts";
+import { groupByIntent } from "@agent-jig/core";
+import type { EditForAnalysis, StructuralAnalyzer } from "@agent-jig/structural";
 
 interface EditPayload {
   file_path?: string;
@@ -20,7 +20,7 @@ interface EditPayload {
  * grouping relies on them). Shared so the view and its label enrichment group the
  * same set of edits the same way.
  */
-export function visibleEvents(events: GovernorEvent[]): GovernorEvent[] {
+export function visibleEvents(events: JigEvent[]): JigEvent[] {
   const rejected = new Set<string>();
   for (const e of events) {
     if (e.type === "ack" && e.gateState === "rejected" && e.editId !== null) rejected.add(e.editId);
@@ -32,12 +32,12 @@ export function visibleEvents(events: GovernorEvent[]): GovernorEvent[] {
 }
 
 export function buildChangeView(
-  events: GovernorEvent[],
+  events: JigEvent[],
   analyzer: StructuralAnalyzer | null,
 ): ChangeView {
   const visible = visibleEvents(events);
 
-  const callByEditId = new Map<string, GovernorEvent>();
+  const callByEditId = new Map<string, JigEvent>();
   for (const e of visible) {
     if (e.type === "tool_call" && e.editId !== null) callByEditId.set(e.editId, e);
   }

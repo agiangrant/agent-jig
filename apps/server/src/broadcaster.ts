@@ -1,4 +1,4 @@
-import type { ServerToClient } from "@governor/contracts";
+import type { ServerToClient } from "@agent-jig/contracts";
 import type { WebSocket } from "ws";
 
 /** Tracks connected UI sockets and fans server→client messages out to them. */

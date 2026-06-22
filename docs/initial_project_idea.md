@@ -1,8 +1,8 @@
-# Governor — Specification
+# Jig — Specification
 
 *A pace-controlled, narrated, interruptible interface for supervised AI coding.*
 
-> **Working name only.** "Governor" is a placeholder — a centrifugal governor is the original feedback device that regulates the speed of a fast machine, which is roughly the whole thesis. Rename at will. It slots beside Coulter, Rigor, and the PR digest in the knowledge-condensing system.
+> **Working name only.** "Jig" is a placeholder — a centrifugal jig is the original feedback device that regulates the speed of a fast machine, which is roughly the whole thesis. Rename at will. It slots beside Coulter, Rigor, and the PR digest in the knowledge-condensing system.
 
 **Status:** design complete, unbuilt. One central hypothesis is unproven and only the chair will settle it (see §11).
 
@@ -10,17 +10,17 @@
 
 ## 1. Thesis
 
-Generation got cheap. Everything downstream of generation — trusting code, comprehending it, exercising judgment over it, and allocating attention across parallel streams — became the scarce resource. Tooling investment has gone almost entirely to the generation side; every documented pain point is on the consumption side. That asymmetry is the opportunity, and Governor lives squarely on the consumption side.
+Generation got cheap. Everything downstream of generation — trusting code, comprehending it, exercising judgment over it, and allocating attention across parallel streams — became the scarce resource. Tooling investment has gone almost entirely to the generation side; every documented pain point is on the consumption side. That asymmetry is the opportunity, and Jig lives squarely on the consumption side.
 
 The specific problem: an agent is a fast producer and a human is a slow consumer, and there is currently no flow control between them. The human either drops frames — skims, loses the thread, rubber-stamps — or blocks entirely, reading everything at the end, decontextualized and exhausted, after the agent has already built nine things on a foundation the human would have rejected at minute two. Both failure modes degrade quality and, counterintuitively, velocity: the comprehension debt comes due at the worst possible time, in review or in production.
 
-The systems framing is backpressure. Governor inserts a buffered channel with a variable drain rate between the agent and the human. The human sets the rate. Comprehension becomes continuous rather than interrupted, and the debt is paid down at a pace the human chooses rather than all at once at the end. The same argument as streaming replication over batch reconciliation.
+The systems framing is backpressure. Jig inserts a buffered channel with a variable drain rate between the agent and the human. The human sets the rate. Comprehension becomes continuous rather than interrupted, and the debt is paid down at a pace the human chooses rather than all at once at the end. The same argument as streaming replication over batch reconciliation.
 
 This is deliberately countercultural — it slows the agent on purpose, against the prevailing "more throughput" current. That is the point. The pitch is not "go faster." It is "stop paying the comprehension debt at the moment it is most expensive."
 
 ## 2. The core idea
 
-Gate the *information flow*, not the clock. Pomodoro gates time; Governor gates how fast the agent's work is revealed and how fast the agent is permitted to proceed. A single control — a speed dial — sets the drain rate of the buffer:
+Gate the *information flow*, not the clock. Pomodoro gates time; Jig gates how fast the agent's work is revealed and how fast the agent is permitted to proceed. A single control — a speed dial — sets the drain rate of the buffer:
 
 - **Real-time:** the dial is wide open, the gate is a no-op, the agent runs unthrottled. Use for small, low-risk edits you're comfortable with.
 - **Slowed:** the agent's next edit blocks until you've caught up. Use for large or unfamiliar work, so you can read as the agent codes and understand where it's going before it gets there.
@@ -29,13 +29,13 @@ The dial is a trust dial with teeth. It does not merely delay the *display* of w
 
 ## 3. Non-goals
 
-Scope discipline is load-bearing here. Governor is **not**:
+Scope discipline is load-bearing here. Jig is **not**:
 
 - **A faster agent.** It does the opposite, by design. Speed gains are not the value proposition.
 - **A DVR.** Display-only delay — replaying the edit stream while the agent races ahead — is explicitly rejected. You would comprehend minute two while the agent is at minute nine, having already built on decisions you haven't seen. Comprehension without agency is theater. The gate must apply to the agent, not just the screen.
 - **A diff viewer.** The intent-grouped view (§6.2) is one projection of the system, not the product.
 - **A linter / CI replacement.** It operates *during* generation, upstream of where CI sits.
-- **A generation tool.** It assumes some other agent (Claude Code via the SDK) is doing the writing. Governor is the place where the human meets that work.
+- **A generation tool.** It assumes some other agent (Claude Code via the SDK) is doing the writing. Jig is the place where the human meets that work.
 - **A general productivity timer.** The unit of control is decisions presented for ratification, not minutes.
 
 ## 4. Architecture: one event log, three projections
@@ -123,7 +123,7 @@ The interesting trigger is unfamiliarity — and unfamiliar *to whom*. If the sy
 
 **Why prior attempts stopped short.** Difftastic and SemanticDiff parse to an AST and diff structure instead of lines, which kills false positives (reformats, reorders shown as noise). But nobody attacked *narrative order*: a changeset is a story with a thesis, supporting changes, and mechanical consequences, and the line diff flattens that into alphabetized shrapnel the reader must re-derive. That re-derivation is the review fatigue.
 
-**Governor's unfair advantage.** Every prior effort had to *reverse-engineer* intent from the final patch — genuinely hard. Governor doesn't. It sits on the live tool-call stream: the actual order edits were made, which edits belong to which stated goal, and the narrator's "why." The intent structure GitHub would need a research team to infer, Governor gets for free from the buffer. It **preserves** the story rather than reconstructing it.
+**Jig's unfair advantage.** Every prior effort had to *reverse-engineer* intent from the final patch — genuinely hard. Jig doesn't. It sits on the live tool-call stream: the actual order edits were made, which edits belong to which stated goal, and the narrator's "why." The intent structure GitHub would need a research team to infer, Jig gets for free from the buffer. It **preserves** the story rather than reconstructing it.
 
 **The presentation:**
 - **Intent groups replace file order.** Reading order is explanation order: thesis (core change) → supporting → mechanical consequences. This alone removes most re-derivation.
@@ -173,7 +173,7 @@ Every pause, downshift, correction, and approval is a judgment-capture moment, a
 - An approval like *"charges get capped attempts + idempotency keys, read-only calls keep defaults"* is a convention being born: the rule, the reasoning, the code context, and an explicit human sign-off, all at the moment of decision.
 - The throttle UI and Coulter are the same thing from two angles: one controls the *rate* of judgment, the other records its *content*. If the pause button also opens an inline "actually, do it this way" that's captured as a sample, the loop between attention and taste closes. The conversation channel doesn't just steer the session — it generates the training corpus for every future session.
 
-This is also the meaning-preservation argument made concrete. The Nature Scientific Reports finding is that *passive* reliance on AI erodes self-efficacy and the sense of meaning core to intrinsic motivation, while *active collaboration* mitigates it. Governor's throttle structurally enforces the active posture; review-and-rubber-stamp is the passive one. Governor is, among other things, a deskilling countermeasure that happens to also make the work more legible.
+This is also the meaning-preservation argument made concrete. The Nature Scientific Reports finding is that *passive* reliance on AI erodes self-efficacy and the sense of meaning core to intrinsic motivation, while *active collaboration* mitigates it. Jig's throttle structurally enforces the active posture; review-and-rubber-stamp is the passive one. Jig is, among other things, a deskilling countermeasure that happens to also make the work more legible.
 
 ---
 
@@ -223,4 +223,4 @@ Each design choice traces to a finding (sources named for follow-up, not reprodu
 - **Deskilling as a structural problem** — systemic conditions inhibit capacity cultivation (AI & Society, 2025). → judgment-capture as prevention of an org-level loss.
 - **Modality principle** — spoken narration + visuals beats text + visuals because audio uses a separate channel (Mayer, multimedia learning). → why narration is audio, not more on-screen text.
 - **Eye-tracking review studies, vigilance decrement, tangled-change defect rates.** → intent grouping, mechanical collapse, and outlier flagging.
-- **Unified diff as a 1970s transmission format**; AST-diff prior art (Difftastic, SemanticDiff) that stops short of narrative order. → the comprehension-first diff view and Governor's stream-derived advantage.
+- **Unified diff as a 1970s transmission format**; AST-diff prior art (Difftastic, SemanticDiff) that stops short of narrative order. → the comprehension-first diff view and Jig's stream-derived advantage.

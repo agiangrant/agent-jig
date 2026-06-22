@@ -1,4 +1,4 @@
-import type { DialMode, RiskRule } from "@governor/contracts";
+import type { DialMode, RiskRule } from "@agent-jig/contracts";
 import picomatch from "picomatch";
 
 export interface RiskAssessment {

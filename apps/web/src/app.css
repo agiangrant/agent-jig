@@ -4,6 +4,13 @@
   --line: #2a2d38;
   --fg: #e7e9ee;
   --muted: #8a90a2;
+  /* App frame (sidebar, title bar, conversation) — a step darker than the
+     editor surface so the center content reads as the lit "stage". Derived from
+     --bg with color-mix so it follows any selected/imported theme. */
+  --chrome: color-mix(in srgb, var(--bg), #000 22%);
+  /* Slide-able edges (sidebar/conversation resize handles): a neutral palette
+     tone, deliberately NOT the accent. Swap to taste (--muted/--fg/--warn). */
+  --edge: var(--muted);
   --accent: #6ea8fe;
   --warn: #e6b450;
   --danger: #e06c75;
@@ -16,7 +23,136 @@
   --code-font: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --ui-font-size: 14px;
   --code-font-size: 12px;
+  /* Height reserved at the top for a custom (frameless) title bar; 0 in the
+     browser, set on the desktop's macOS overlay window so content + sticky
+     panels clear the native traffic lights. See [data-frameless] below. */
+  --titlebar-h: 0px;
   color-scheme: dark;
+
+  /* ── Redesign chrome layer ──────────────────────────────────────────────
+     The Jig.dc.html redesign needs a richer palette than the base theme
+     exposes: elevation surfaces, dimmed text steps, and tinted status fills.
+     Rather than ship the mockup's fixed teal/slate/paper palettes, we *derive*
+     the whole layer from the active theme's --bg/--fg/--accent/--warn/--ok/
+     --danger via color-mix, so any imported VSCode theme drives it and these
+     stay live as applyChrome() updates the base vars. Surfaces step toward --fg
+     (always adds contrast — works for light and dark, never invisible cards). */
+  --bg-1: color-mix(in srgb, var(--bg), var(--fg) 4%);
+  --bg-2: color-mix(in srgb, var(--bg), var(--fg) 7%);
+  --bg-3: color-mix(in srgb, var(--bg), var(--fg) 11%);
+  --hover: color-mix(in srgb, var(--bg), var(--fg) 16%);
+  --border: color-mix(in srgb, var(--bg), var(--fg) 15%);
+  --border-soft: color-mix(in srgb, var(--bg), var(--fg) 8%);
+  --text: var(--fg);
+  --text-2: var(--muted);
+  --text-3: color-mix(in srgb, var(--muted), var(--bg) 45%);
+  /* Status families: a saturated base + two tint steps toward the background
+     for chips/halos/banners. --warm == --warn, --go == --ok (design names). */
+  --accent-2: color-mix(in srgb, var(--accent), var(--bg) 80%);
+  --accent-dim: color-mix(in srgb, var(--accent), var(--bg) 84%);
+  --warm: var(--warn);
+  --warm-2: color-mix(in srgb, var(--warn), var(--bg) 70%);
+  --warm-dim: color-mix(in srgb, var(--warn), var(--bg) 82%);
+  --go: var(--ok);
+  --go-2: color-mix(in srgb, var(--ok), var(--bg) 72%);
+  --go-dim: color-mix(in srgb, var(--ok), var(--bg) 84%);
+  --danger-2: color-mix(in srgb, var(--danger), var(--bg) 78%);
+  /* Dark text that reads on the (light) accent/warm/go fills. */
+  --on-go: color-mix(in srgb, var(--ok), #000 80%);
+  --on-warm: color-mix(in srgb, var(--warn), #000 80%);
+  --shadow: 0 24px 70px -20px rgba(0, 0, 0, 0.6);
+}
+
+/* ── Density ─────────────────────────────────────────────────────────────
+   Component-level spacing/sizing tokens. `dense` is the default (and the
+   :root fallback before settings.apply() runs); `calm` is the roomier opt-in,
+   selected via Settings → data-density on <html>. */
+:root,
+[data-density="dense"] {
+  --pad: 12px;
+  --pad-sm: 9px;
+  --pad-xs: 6px;
+  --gap: 9px;
+  --gap-sm: 6px;
+  --fs: 13px;
+  --fs-sm: 11px;
+  --fs-xs: 10px;
+  --fs-lg: 14px;
+  --radius: 8px;
+  --radius-sm: 6px;
+  --row: 32px;
+  --leading: 1.5;
+}
+[data-density="calm"] {
+  --pad: 20px;
+  --pad-sm: 13px;
+  --pad-xs: 9px;
+  --gap: 15px;
+  --gap-sm: 9px;
+  --fs: 14px;
+  --fs-sm: 12px;
+  --fs-xs: 11px;
+  --fs-lg: 15px;
+  --radius: 11px;
+  --radius-sm: 8px;
+  --row: 42px;
+  --leading: 1.65;
+}
+
+@keyframes gv-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.82);
+  }
+}
+@keyframes gv-fade {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes gv-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+/* Thin, theme-following scrollbars for any region tagged .gv-scroll. */
+.gv-scroll::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+.gv-scroll::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 9px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.gv-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+  background-clip: padding-box;
+}
+.gv-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Desktop frameless (macOS overlay title bar): reserve a top strip so the app's
+   sticky panels and header sit below the native traffic lights. Set by the web
+   app when running inside the Tauri macOS shell. */
+[data-frameless] {
+  --titlebar-h: 28px;
 }
 
 * {

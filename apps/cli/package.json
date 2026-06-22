@@ -1,14 +1,17 @@
 {
-  "name": "@governor/cli",
+  "name": "@agent-jig/cli",
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "jig": "./bin/jig.mjs"
+  },
   "scripts": {
     "start": "tsx src/index.ts"
   },
   "dependencies": {
-    "@governor/contracts": "workspace:*",
-    "@governor/server": "workspace:*"
+    "@agent-jig/contracts": "workspace:*",
+    "@agent-jig/server": "workspace:*"
   },
   "devDependencies": {
     "tsx": "^4.19.2"

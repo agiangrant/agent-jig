@@ -1,10 +1,14 @@
-const UI_FONT_KEY = "governor:uiFont";
-const CODE_FONT_KEY = "governor:codeFont";
-const CODE_SIZE_KEY = "governor:codeFontSize";
-const UI_SIZE_KEY = "governor:uiSize";
+const UI_FONT_KEY = "jig:uiFont";
+const CODE_FONT_KEY = "jig:codeFont";
+const CODE_SIZE_KEY = "jig:codeFontSize";
+const UI_SIZE_KEY = "jig:uiSize";
+const DENSITY_KEY = "jig:density";
 
 export type UiSize = "small" | "medium" | "large";
 const UI_SIZE_PX: Record<UiSize, number> = { small: 13, medium: 14, large: 16 };
+
+/** Component spacing scale. `dense` is the default; `calm` is the roomier mode. */
+export type Density = "dense" | "calm";
 
 // Default font stacks; a chosen font is prepended as the first family.
 const UI_DEFAULT = 'ui-monospace, "SF Mono", Menlo, monospace';
@@ -31,6 +35,9 @@ function loadUiSize(): UiSize {
   const v = load(UI_SIZE_KEY, "medium");
   return v === "small" || v === "large" ? v : "medium";
 }
+function loadDensity(): Density {
+  return load(DENSITY_KEY, "dense") === "calm" ? "calm" : "dense";
+}
 function fontStack(chosen: string, fallback: string): string {
   const f = chosen.trim();
   return f ? `"${f}", ${fallback}` : fallback;
@@ -43,6 +50,7 @@ class Settings {
   codeFont = $state<string>(load(CODE_FONT_KEY, ""));
   codeFontSize = $state<number>(clampCodeSize(Number(load(CODE_SIZE_KEY, "12"))));
   uiSize = $state<UiSize>(loadUiSize());
+  density = $state<Density>(loadDensity());
 
   apply(): void {
     const r = document.documentElement.style;
@@ -50,6 +58,7 @@ class Settings {
     r.setProperty("--code-font", fontStack(this.codeFont, CODE_DEFAULT));
     r.setProperty("--code-font-size", `${this.codeFontSize}px`);
     r.setProperty("--ui-font-size", `${UI_SIZE_PX[this.uiSize]}px`);
+    document.documentElement.dataset.density = this.density;
   }
 
   setUiFont(value: string): void {
@@ -70,6 +79,11 @@ class Settings {
   setUiSize(size: UiSize): void {
     this.uiSize = size;
     persist(UI_SIZE_KEY, size);
+    this.apply();
+  }
+  setDensity(density: Density): void {
+    this.density = density;
+    persist(DENSITY_KEY, density);
     this.apply();
   }
 }

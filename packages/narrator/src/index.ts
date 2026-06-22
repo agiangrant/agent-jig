@@ -114,18 +114,14 @@ function openAiGenerate(baseUrl: string, model: string, apiKey?: string): Genera
 }
 
 /**
- * Pick the generator from the environment. With `GOVERNOR_LLM_BASE_URL` set we
+ * Pick the generator from the environment. With `JIG_LLM_BASE_URL` set we
  * talk to any OpenAI-compatible endpoint (point it at a local Ollama, say);
  * otherwise we use the Anthropic SDK with Haiku.
  */
 function defaultGenerate(model: string): GenerateFn {
-  const baseUrl = process.env.GOVERNOR_LLM_BASE_URL;
+  const baseUrl = process.env.JIG_LLM_BASE_URL;
   if (baseUrl) {
-    return openAiGenerate(
-      baseUrl,
-      process.env.GOVERNOR_LLM_MODEL ?? model,
-      process.env.GOVERNOR_LLM_API_KEY,
-    );
+    return openAiGenerate(baseUrl, process.env.JIG_LLM_MODEL ?? model, process.env.JIG_LLM_API_KEY);
   }
   return anthropicGenerate(model);
 }

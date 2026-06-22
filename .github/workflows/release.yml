@@ -1,0 +1,113 @@
+# Build the Jig desktop app for macOS, Windows, and Linux.
+#
+# Each artifact is built on its NATIVE runner — never cross-compiled — because the
+# bundled sidecar's node_modules carries the Claude Agent SDK's per-platform native
+# binary, and `pnpm deploy` resolves that optional dependency by the BUILD HOST's
+# os/arch (not by a Tauri --target). Building arm64 on an arm runner and x64 on an
+# x64 runner guarantees each app ships the matching `claude` binary.
+#
+# Interim coverage: macOS arm64 + x64, Windows x64, Linux x64 (glibc). arm64
+# Linux/Windows and musl/Alpine need their own native runners — add later.
+#
+# The packaged app requires the user's host to have Node 24+ on PATH (node:sqlite
+# is a Node-24 builtin); we don't yet vendor a runtime.
+#
+# Triggers:
+#   - push to main  → build all platforms and publish a rolling 'nightly'
+#                     PRERELEASE (overwritten each push, tag tracks the commit).
+#   - push of a v*   → build all platforms into a DRAFT stable release for that tag.
+#     tag             (review, then publish manually).
+#   - manual dispatch → same as a main push (a nightly build).
+
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+# Only the latest run per ref matters; cancel superseded builds so a burst of
+# main pushes doesn't queue several full 4-platform builds.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # For a rolling nightly (anything that isn't a v* tag) delete the previous
+  # 'nightly' release + tag so the matrix recreates it fresh at this commit.
+  # No-op on tag pushes, which get their own immutable release.
+  reset-nightly:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Reset the rolling nightly release
+        if: github.ref_type != 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete nightly --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+
+  desktop:
+    needs: reset-nightly
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, name: macOS (Apple silicon) } # arm64
+          - { os: macos-13, name: macOS (Intel) } # x86_64
+          - { os: ubuntu-22.04, name: Linux x64 } # build on 22.04 for wide glibc/webkit compat
+          - { os: windows-latest, name: Windows x64 }
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
+            libappindicator3-dev libxdo-dev patchelf \
+            build-essential curl wget file libssl-dev
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+
+      # esbuild's postinstall is allowlisted via root package.json
+      # (pnpm.onlyBuiltDependencies), so its native binary is built here.
+      - run: pnpm install --frozen-lockfile
+
+      # tauri-action runs the config's beforeBuildCommand (build the web UI +
+      # `bundle:sidecar`), then `tauri build`, then uploads the installers.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop
+          # Tag push → immutable per-version release; otherwise → rolling 'nightly'.
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'nightly' }}
+          releaseName: ${{ github.ref_type == 'tag' && format('Jig {0}', github.ref_name) || 'Jig (nightly)' }}
+          # Stable tags land as a draft to review before publishing; nightly
+          # auto-publishes as a prerelease.
+          releaseDraft: ${{ github.ref_type == 'tag' }}
+          prerelease: ${{ github.ref_type != 'tag' }}
+          # No --target: each runner builds its own host arch (macos-14 → arm64,
+          # macos-13 → x64), so the Rust binary and the sidecar's native `claude`
+          # binary always match. A universal build would pair a fat binary with a
+          # single-arch sidecar.

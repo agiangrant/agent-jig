@@ -1,5 +1,5 @@
 {
-  "name": "@governor/core",
+  "name": "@agent-jig/core",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -7,7 +7,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@governor/contracts": "workspace:*",
+    "@agent-jig/contracts": "workspace:*",
     "picomatch": "^4.0.2"
   },
   "devDependencies": {

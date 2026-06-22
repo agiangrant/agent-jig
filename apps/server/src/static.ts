@@ -13,8 +13,8 @@ const TYPES: Record<string, string> = {
 };
 
 const FALLBACK =
-  "Governor server is running. Build the web UI (`pnpm --filter @governor/web build`) " +
-  "or run the Vite dev server (`pnpm --filter @governor/web dev`).";
+  "Jig server is running. Build the web UI (`pnpm --filter @agent-jig/web build`) " +
+  "or run the Vite dev server (`pnpm --filter @agent-jig/web dev`).";
 
 /**
  * Serves the built web UI from an absolute root, falling back to index.html

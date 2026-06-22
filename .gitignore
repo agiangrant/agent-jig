@@ -7,7 +7,7 @@ dist/
 *.db-journal
 *.db-wal
 *.db-shm
-.governor/
+.jig/
 
 # Env / secrets
 .env
@@ -23,3 +23,6 @@ dist/
 
 # Logs
 *.log
+
+# Playwright MCP scratch snapshots
+.playwright-mcp/
