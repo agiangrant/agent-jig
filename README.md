@@ -76,6 +76,24 @@ It starts clean — create sessions from the UI's **New Session** modal. To also
 session at boot, set `JIG_REPO=/path/to/target` (and optionally `JIG_TASK="…"`).
 Server code changes restart the process (sessions reset); UI changes hot-reload in place.
 
+## Desktop app
+
+Prebuilt installers (macOS `.dmg`, Windows `.msi`/`.exe`, Linux `.deb`/`.rpm`/`.AppImage`) are
+published on the [Releases](../../releases) page — a rolling **nightly** prerelease per push to
+`main`, plus stable `v*` tags. Each is built on its native runner.
+
+> **Requires [Node.js](https://nodejs.org) 24+ on your PATH.** The app runs a local Node sidecar
+> (`node:sqlite` is a Node 24 builtin); without it the app won't start. (Bundling a runtime so this
+> isn't needed is planned.)
+
+The builds are currently **unsigned**, so each OS warns on first launch — a one-time step:
+
+- **macOS** — after moving Jig to Applications, clear the quarantine flag:
+  `xattr -dr com.apple.quarantine /Applications/Jig.app` (or right-click → Open, then
+  System Settings → Privacy & Security → Open Anyway).
+- **Windows** — on the SmartScreen prompt: **More info → Run anyway**.
+- **Linux** — AppImage: `chmod +x Jig_*.AppImage` then run; `.deb`/`.rpm` install normally.
+
 ## Status
 
 Phase 1 (**Observe**) is built: the paced buffer, the websocket server, and a minimal UI

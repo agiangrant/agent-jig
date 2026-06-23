@@ -26,3 +26,6 @@ dist/
 
 # Playwright MCP scratch snapshots
 .playwright-mcp/
+
+# bundle:sidecar pnpm-deploy scratch dir
+.jig-sidecar-deploy/

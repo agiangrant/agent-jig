@@ -110,6 +110,25 @@ jobs:
           # auto-publishes as a prerelease.
           releaseDraft: ${{ github.ref_type == 'tag' }}
           prerelease: ${{ github.ref_type != 'tag' }}
+          # Install notes shown on the release page. The builds are unsigned, so
+          # each OS needs a one-time "let it run" step; the app also requires the
+          # host to have Node 24+ on PATH (interim — no runtime is vendored yet).
+          releaseBody: |
+            > **Requires [Node.js](https://nodejs.org) 24 or newer on your PATH.** The app runs a local
+            > Node sidecar; without Node 24+ it won't start.
+
+            These builds are **unsigned**, so your OS will warn on first launch. One-time steps:
+
+            **macOS** — after dragging Jig to Applications, clear the quarantine flag:
+            ```
+            xattr -dr com.apple.quarantine /Applications/Jig.app
+            ```
+            (or right-click the app → Open, then System Settings → Privacy & Security → Open Anyway)
+
+            **Windows** — on the SmartScreen prompt, click **More info → Run anyway**.
+
+            **Linux** — for the AppImage: `chmod +x Jig_*.AppImage` then run it. The `.deb`/`.rpm`
+            install normally.
           # No --target: each runner builds its own host arch (macos-14 → arm64,
           # macos-13 → x64), so the Rust binary and the sidecar's native `claude`
           # binary always match. A universal build would pair a fat binary with a

@@ -16,8 +16,7 @@
 // a per-platform native binary. esbuild only collapses the workspace TS.
 
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { cpSync, existsSync, rmSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import esbuild from "esbuild";
@@ -63,7 +62,14 @@ await esbuild.build({
 // agent SDK's matching native binary for THIS build host). We keep only its
 // node_modules — the bundle already contains all the first-party code.
 console.log("• resolving prod node_modules (pnpm deploy)");
-const deployDir = mkdtempSync(join(tmpdir(), "jig-sidecar-"));
+// Deploy into a repo-relative dir (not an OS temp dir). pnpm resolves the deploy
+// target against the workspace root, so an absolute temp path on a *different
+// drive* than the checkout (Windows: C:\…\Temp vs a D:\ checkout) gets mangled
+// into an invalid concatenated path. A relative name stays on the same drive on
+// every platform.
+const deployRel = ".jig-sidecar-deploy";
+const deployDir = join(repoRoot, deployRel);
+rmSync(deployDir, { recursive: true, force: true }); // clear any interrupted run
 try {
   // `node-linker=hoisted` flattens the whole prod closure to a single top-level
   // node_modules. The bundle inlined every @agent-jig/* package, so their
@@ -72,7 +78,7 @@ try {
   // nested layout would hide them under each (now-inlined) workspace package.
   //
   // Argument array (no shell on POSIX); pnpm on Windows is a `.cmd`, so a shell
-  // is required there to resolve it. `deployDir` is a self-generated temp path.
+  // is required there to resolve it.
   execFileSync(
     "pnpm",
     [
@@ -82,7 +88,7 @@ try {
       "deploy",
       "--prod",
       "--legacy",
-      deployDir,
+      deployRel,
     ],
     { cwd: repoRoot, stdio: "inherit", shell: process.platform === "win32" },
   );
