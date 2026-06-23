@@ -98,6 +98,9 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GitHub runners lack FUSE, so linuxdeploy (an AppImage) can't mount
+          # itself when bundling the Linux AppImage. Make it self-extract instead.
+          APPIMAGE_EXTRACT_AND_RUN: 1
         with:
           projectPath: apps/desktop
           # Tag push → immutable per-version release; otherwise → rolling 'nightly'.

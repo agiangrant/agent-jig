@@ -18,7 +18,7 @@
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import esbuild from "esbuild";
 
@@ -34,7 +34,12 @@ const externalizeNpm = {
   name: "externalize-npm",
   setup(build) {
     build.onResolve({ filter: /^[^./]/ }, (args) => {
-      if (args.path.startsWith("@agent-jig/")) return null; // let esbuild resolve + bundle
+      // The filter also matches the entry point and absolute paths — on Windows
+      // the entry is an absolute `D:\...` path with no leading `.`/`/`. Never
+      // externalize those (esbuild errors on an external entry point); only bare
+      // npm specifiers. Bundle our own @agent-jig/* workspace packages.
+      if (args.kind === "entry-point" || isAbsolute(args.path)) return null;
+      if (args.path.startsWith("@agent-jig/")) return null;
       return { external: true };
     });
   },
