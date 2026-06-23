@@ -78,9 +78,10 @@ Server code changes restart the process (sessions reset); UI changes hot-reload 
 
 ## Desktop app
 
-Prebuilt installers (macOS `.dmg`, Windows `.msi`/`.exe`, Linux `.deb`/`.rpm`/`.AppImage`) are
-published on the [Releases](../../releases) page — a rolling **nightly** prerelease per push to
-`main`, plus stable `v*` tags. Each is built on its native runner.
+Prebuilt installers (macOS `.dmg` for Apple silicon, Windows `.msi`/`.exe`, Linux `.deb`/`.rpm`)
+are published on the [Releases](../../releases) page — a rolling **nightly** prerelease per push to
+`main`, plus stable `v*` tags. Each is built on its native runner. (Intel-mac and Linux AppImage
+builds are omitted for now — flaky CI runners / FUSE tooling; the former can return via cross-compile.)
 
 > **Requires [Node.js](https://nodejs.org) 24+ on your PATH.** The app runs a local Node sidecar
 > (`node:sqlite` is a Node 24 builtin); without it the app won't start. (Bundling a runtime so this
@@ -92,7 +93,7 @@ The builds are currently **unsigned**, so each OS warns on first launch — a on
   `xattr -dr com.apple.quarantine /Applications/Jig.app` (or right-click → Open, then
   System Settings → Privacy & Security → Open Anyway).
 - **Windows** — on the SmartScreen prompt: **More info → Run anyway**.
-- **Linux** — AppImage: `chmod +x Jig_*.AppImage` then run; `.deb`/`.rpm` install normally.
+- **Linux** — install the `.deb` (Debian/Ubuntu) or `.rpm` (Fedora/RHEL).
 
 ## Status
 

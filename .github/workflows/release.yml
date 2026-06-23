@@ -52,14 +52,21 @@ jobs:
     needs: reset-nightly
     permissions:
       contents: write
+    # Backstop: GitHub's runners (esp. macOS) can hang in scheduling; don't let a
+    # stuck job block the run (and the nightly publish) for hours.
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
+        # `bundles` restricts the Tauri targets per-OS. Linux skips the AppImage:
+        # its linuxdeploy tooling needs FUSE and fails on GitHub runners even with
+        # APPIMAGE_EXTRACT_AND_RUN; the .deb/.rpm cover Debian/Ubuntu + Fedora/RHEL.
+        # macOS is Apple-silicon only for now — the macos-13 (Intel) runners are
+        # scarce and repeatedly stall; Intel can return later via cross-compile.
         include:
-          - { os: macos-14, name: macOS (Apple silicon) } # arm64
-          - { os: macos-13, name: macOS (Intel) } # x86_64
-          - { os: ubuntu-22.04, name: Linux x64 } # build on 22.04 for wide glibc/webkit compat
-          - { os: windows-latest, name: Windows x64 }
+          - { os: macos-14, name: macOS (Apple silicon), bundles: '' } # arm64
+          - { os: ubuntu-22.04, name: Linux x64, bundles: '--bundles deb,rpm' } # 22.04 = wide glibc/webkit compat
+          - { os: windows-latest, name: Windows x64, bundles: '' }
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.name }}
     steps:
@@ -98,11 +105,10 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # GitHub runners lack FUSE, so linuxdeploy (an AppImage) can't mount
-          # itself when bundling the Linux AppImage. Make it self-extract instead.
-          APPIMAGE_EXTRACT_AND_RUN: 1
         with:
           projectPath: apps/desktop
+          # Per-OS bundle targets (Linux drops the FUSE-dependent AppImage).
+          args: ${{ matrix.bundles }}
           # Tag push → immutable per-version release; otherwise → rolling 'nightly'.
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'nightly' }}
           releaseName: ${{ github.ref_type == 'tag' && format('Jig {0}', github.ref_name) || 'Jig (nightly)' }}
@@ -127,8 +133,7 @@ jobs:
 
             **Windows** — on the SmartScreen prompt, click **More info → Run anyway**.
 
-            **Linux** — for the AppImage: `chmod +x Jig_*.AppImage` then run it. The `.deb`/`.rpm`
-            install normally.
+            **Linux** — install the `.deb` (Debian/Ubuntu) or `.rpm` (Fedora/RHEL).
           # No --target: each runner builds its own host arch (macos-14 → arm64,
           # macos-13 → x64), so the Rust binary and the sidecar's native `claude`
           # binary always match. A universal build would pair a fat binary with a
