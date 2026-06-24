@@ -585,6 +585,18 @@ function editEvent(editId: string): JigEvent | undefined {
 function filePath(payload: unknown): string {
   return ((payload ?? {}) as { file_path?: string }).file_path ?? "";
 }
+/** The shell command a Bash tool_call ran (its payload is the raw tool input). */
+function bashCommand(payload: unknown): string {
+  return ((payload ?? {}) as { command?: string }).command ?? "";
+}
+/** A one-line "what did this tool do" detail for a tool_call: command, path, or pattern. */
+function toolDetail(e: JigEvent): string {
+  const tool = e.toolName ?? "";
+  if (tool === "Bash") return bashCommand(e.payload);
+  const p = filePath(e.payload);
+  if (p) return p;
+  return ((e.payload ?? {}) as { pattern?: string }).pattern ?? "";
+}
 function narrationFor(editId: string): string {
   const e = conn.events.find((x) => x.type === "narration" && x.editId === editId);
   return ((e?.payload ?? {}) as { text?: string }).text ?? "";
@@ -794,16 +806,88 @@ function waitedLabel(ms: number): string {
 const oldestIdle = $derived(
   conn.queue.map((e) => waitedMs(e.editId)).reduce((a, b) => Math.max(a, b), 0),
 );
-// Notify once per edit when it crosses the threshold (pull an AFK reviewer back).
-const notified = new Set<string>();
-$effect(() => {
-  for (const edit of conn.queue) {
-    if (waitedMs(edit.editId) >= idleThreshold && !notified.has(edit.editId)) {
-      notified.add(edit.editId);
-      void notify("Jig — an edit is waiting", `${edit.path} needs your review.`);
-    }
-  }
+
+// --- Bottom status bar: live "now" telemetry over the event log ---
+// A 1s clock so the elapsed timer ticks (the 15s `now` above is too coarse for it).
+let clock = $state(Date.now());
+setInterval(() => {
+  clock = Date.now();
+}, 1000);
+// Session elapsed, freezing at endedAt once the session finishes. mm:ss (h:mm:ss past an hour).
+const elapsedText = $derived.by(() => {
+  const start = conn.session?.startedAt;
+  if (!start) return "0:00";
+  const ref = conn.session?.endedAt ?? clock;
+  const secs = Math.max(0, Math.floor((ref - start) / 1000));
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  const mm = h > 0 ? String(m).padStart(2, "0") : String(m);
+  return `${h > 0 ? `${h}:` : ""}${mm}:${String(s).padStart(2, "0")}`;
 });
+// The most recent event drives the live "now" line when nothing needs the human.
+const lastEvent = $derived(conn.events.length ? conn.events[conn.events.length - 1] : undefined);
+const WRITE_TOOLS = new Set(["Edit", "Write", "MultiEdit"]);
+function describeEvent(e: JigEvent): string {
+  switch (e.type) {
+    case "session_start":
+      return "Session started";
+    case "session_end":
+      return "Session finished";
+    case "reasoning": {
+      const t = text(e.payload).replace(/\s+/g, " ").trim();
+      return t ? (t.length > 80 ? `${t.slice(0, 80)}…` : t) : "Thinking…";
+    }
+    case "narration":
+      return text(e.payload).trim() || "Working…";
+    case "tool_call": {
+      const tool = e.toolName ?? "tool";
+      const base = filePath(e.payload) ? baseOf(filePath(e.payload)) : "";
+      if (WRITE_TOOLS.has(tool)) return base ? `Editing ${base}` : "Editing files";
+      if (tool === "Bash") {
+        const cmd = bashCommand(e.payload).replace(/\s+/g, " ").trim();
+        return cmd ? `$ ${cmd.length > 72 ? `${cmd.slice(0, 72)}…` : cmd}` : "Running a command";
+      }
+      if (tool === "Read") return base ? `Reading ${base}` : "Reading files";
+      if (tool === "Grep" || tool === "Glob") return "Searching the codebase";
+      return `${tool}…`;
+    }
+    case "tool_result":
+      return "Processing results";
+    case "directive":
+      return "Steering directive sent";
+    case "out_of_band_change":
+      return "External change detected";
+    case "ack":
+      return "Edit approved";
+    case "dial_change":
+      return conn.mode === "slowed" ? "Switched to Slowed" : "Switched to Real-time";
+    default:
+      return "Working…";
+  }
+}
+// The "now" line: attention first, then the latest activity.
+const nowText = $derived.by(() => {
+  const s = conn.session;
+  if (!s) return "";
+  if (s.status === "error") return "Session ended with an error";
+  if (s.status === "done") return "Session finished";
+  if (s.status === "paused") return "Paused — send a message to resume";
+  if (conn.plan) return "Plan ready for your review";
+  if (conn.question) return "Waiting on your answer";
+  if (conn.mode === "slowed" && conn.queue.length > 0) {
+    const n = conn.queue.length;
+    return `Paused — ${n} edit${n > 1 ? "s" : ""} awaiting your review`;
+  }
+  return lastEvent ? describeEvent(lastEvent) : "Starting…";
+});
+// The spinner shows only while work is genuinely in-flight (not blocked on the human).
+const agentBusy = $derived(
+  conn.session?.status === "running" &&
+    !conn.plan &&
+    !conn.question &&
+    !(conn.mode === "slowed" && conn.queue.length > 0),
+);
 
 /** True while a modal/overlay or the agent owns the keyboard — review keys defer. */
 function reviewBlocked(): boolean {
@@ -1157,6 +1241,7 @@ function onGlobalKey(e: KeyboardEvent) {
 <div
   class="shell"
   class:dragging={dragging || chatDragging}
+  class:has-status={activeId !== null}
   style="grid-template-columns: {sidebarOpen ? sidebarWidth : 0}px minmax(0, 1fr) {activeId !== null && chatOpen ? chatWidth : 0}px"
 >
   <nav class="tabs" class:collapsed={!sidebarOpen}>
@@ -1577,6 +1662,7 @@ function onGlobalKey(e: KeyboardEvent) {
                     <span class="seq">#{ev.seq}</span>
                   </li>
                 {:else}
+                  {@const detail = ev.type === "tool_call" ? toolDetail(ev) : ""}
                   <li class="tl">
                     <span class="tl-dot {ev.gateState ?? ''}"></span>
                     <div class="tl-body">
@@ -1585,6 +1671,9 @@ function onGlobalKey(e: KeyboardEvent) {
                         {#if ev.toolName}<span class="tool">{ev.toolName}</span>{/if}
                         {#if ev.gateState}<span class="gate {ev.gateState}">{ev.gateState}</span>{/if}
                       </span>
+                      {#if detail}
+                        <span class="tl-text mono" class:cmd={ev.toolName === "Bash"}>{detail}</span>
+                      {/if}
                     </div>
                     <span class="seq">#{ev.seq}</span>
                   </li>
@@ -1690,6 +1779,39 @@ function onGlobalKey(e: KeyboardEvent) {
         </form>
       </aside>
     {/if}
+  {/if}
+
+  {#if activeId !== null}
+    <!-- Bottom status bar: a full-width strip of live "now" telemetry over the
+         event log, pinned to the viewport bottom *below* both side rails — pacing
+         mode + current activity on the left, session metrics on the right. The
+         rails reserve its height via --statusbar-h, so it never overlaps content. -->
+    <div class="statusbar">
+      <div class="sb-now">
+        <span class="sb-dot" class:slowed={conn.mode === "slowed"}></span>
+        <span class="sb-mode" class:slowed={conn.mode === "slowed"}>
+          {conn.mode === "slowed" ? "Slowed" : "Real-time"}
+        </span>
+        <span class="sb-div"></span>
+        {#if agentBusy}
+          <svg class="sb-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.2-8.6" /></svg>
+        {/if}
+        <span class="sb-text" title={nowText}>{nowText}</span>
+      </div>
+      <div class="sb-right">
+        <span class="sb-metric" title="Time elapsed this session">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
+          {elapsedText}
+        </span>
+        <span class="sb-metric">{conn.events.length} event{conn.events.length === 1 ? "" : "s"}</span>
+        {#if conn.mode === "slowed" && conn.queue.length > 0}
+          <span class="sb-div"></span>
+          <button class="sb-pending" onclick={() => (centerTab = "review")} title="Go to review">
+            {conn.queue.length} pending
+          </button>
+        {/if}
+      </div>
+    </div>
   {/if}
 </div>
 
@@ -2055,7 +2177,13 @@ function onGlobalKey(e: KeyboardEvent) {
     position: relative;
     display: grid;
     min-height: 100vh;
+    /* Height reserved at the bottom for the fixed status bar; 0 unless a session
+       is open (.has-status), so the side rails shrink to clear it. */
+    --statusbar-h: 0px;
     transition: grid-template-columns 0.2s ease;
+  }
+  .shell.has-status {
+    --statusbar-h: 36px;
   }
   .shell.dragging {
     transition: none;
@@ -2078,7 +2206,7 @@ function onGlobalKey(e: KeyboardEvent) {
   .resizer {
     position: absolute;
     top: var(--titlebar-h);
-    bottom: 0;
+    bottom: var(--statusbar-h, 0px);
     width: 9px;
     transform: translateX(-50%);
     cursor: col-resize;
@@ -2109,7 +2237,7 @@ function onGlobalKey(e: KeyboardEvent) {
   .tabs {
     position: sticky;
     top: var(--titlebar-h);
-    height: calc(100dvh - var(--titlebar-h));
+    height: calc(100dvh - var(--titlebar-h) - var(--statusbar-h, 0px));
     /* Grid items default to min-width:auto (min-content), which would keep a
        ~20px sliver when the column collapses to 0; pin it to 0 so it fully
        closes and clips. */
@@ -2662,7 +2790,7 @@ function onGlobalKey(e: KeyboardEvent) {
      header + tabs are pinned and each tab's content owns its own scroll region —
      so the Review diff scrolls in place instead of the whole page. */
   main.session {
-    height: calc(100dvh - var(--titlebar-h));
+    height: calc(100dvh - var(--titlebar-h) - var(--statusbar-h, 0px));
     margin-top: var(--titlebar-h);
     padding: 0;
     display: flex;
@@ -3390,7 +3518,7 @@ function onGlobalKey(e: KeyboardEvent) {
        messages + pinned composer. */
     position: sticky;
     top: var(--titlebar-h);
-    height: calc(100dvh - var(--titlebar-h));
+    height: calc(100dvh - var(--titlebar-h) - var(--statusbar-h, 0px));
     min-width: 0;
     display: flex;
     flex-direction: column;
@@ -3403,7 +3531,7 @@ function onGlobalKey(e: KeyboardEvent) {
   .cdivider {
     position: absolute;
     top: var(--titlebar-h);
-    bottom: 0;
+    bottom: var(--statusbar-h, 0px);
     width: 11px;
     transform: translateX(50%);
     background: transparent;
@@ -4203,6 +4331,26 @@ function onGlobalKey(e: KeyboardEvent) {
     font-style: italic;
     opacity: 0.9;
   }
+  .tl-text.mono {
+    font-family: var(--code-font);
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    word-break: break-word;
+  }
+  /* A run Bash command: tinted panel with a leading prompt glyph. */
+  .tl-text.cmd {
+    color: var(--text-2);
+    background: var(--bg-2);
+    border: 1px solid var(--border-soft);
+    border-radius: var(--radius-sm);
+    padding: 4px 8px;
+    margin-top: 2px;
+  }
+  .tl-text.cmd::before {
+    content: "$ ";
+    color: var(--go);
+    font-weight: 700;
+  }
   .tl-tag {
     font-size: var(--fs-xs);
     color: var(--text-2);
@@ -4318,5 +4466,100 @@ function onGlobalKey(e: KeyboardEvent) {
     border-radius: 50%;
     background: var(--warm);
     animation: gv-pulse 1.6s ease-in-out infinite;
+  }
+
+  /* --- Bottom status bar: fixed full-width strip below both side rails --- */
+  .statusbar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    height: var(--statusbar-h, 36px);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 0 14px;
+    background: var(--bg-1);
+    border-top: 1px solid var(--border);
+  }
+  .sb-now {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    flex: 1;
+  }
+  .sb-dot {
+    width: 7px;
+    height: 7px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--go);
+    box-shadow: 0 0 0 3px var(--go-dim);
+    animation: gv-pulse 1.6s ease-in-out infinite;
+  }
+  .sb-dot.slowed {
+    background: var(--warm);
+    box-shadow: 0 0 0 3px var(--warm-dim);
+  }
+  .sb-mode {
+    flex: none;
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--go);
+  }
+  .sb-mode.slowed {
+    color: var(--warm);
+  }
+  .sb-div {
+    width: 1px;
+    height: 14px;
+    flex: none;
+    background: var(--border);
+  }
+  .sb-spin {
+    flex: none;
+    color: var(--text-3);
+    animation: gv-spin 1.5s linear infinite;
+  }
+  .sb-text {
+    font-size: var(--fs-sm);
+    color: var(--text-2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .sb-right {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex: none;
+  }
+  .sb-metric {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    font-family: var(--code-font);
+    white-space: nowrap;
+  }
+  .sb-pending {
+    border: none;
+    cursor: pointer;
+    font: inherit;
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--on-warm);
+    background: var(--warm);
+    border-radius: 999px;
+    padding: 2px 9px;
+    transition: filter 0.15s ease;
+  }
+  .sb-pending:hover {
+    filter: brightness(1.07);
   }
 </style>

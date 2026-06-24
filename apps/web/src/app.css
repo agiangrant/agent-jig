@@ -128,6 +128,11 @@
     background-position: 200% 0;
   }
 }
+@keyframes gv-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
 
 /* Thin, theme-following scrollbars for any region tagged .gv-scroll. */
 .gv-scroll::-webkit-scrollbar {
