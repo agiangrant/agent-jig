@@ -32,6 +32,23 @@ export interface RunSessionDeps {
   reviewPlan?: (input: Record<string, unknown>) => Promise<PlanDecision>;
 }
 
+/**
+ * Appended to the agent's Claude Code system prompt on every Jig session. Jig's
+ * whole value is the human-paced review loop on *writes*: Edit/Write/MultiEdit go
+ * through a gate that pauses each one for a diff + approval. Bash is deliberately
+ * NOT gated (backpressure on writes, not on thought), so a file change made
+ * through the shell lands silently and bypasses review — which defeats the tool.
+ * This steers the agent to keep writes in the gated tools, and to *surface* the
+ * rare shell-write that's genuinely better instead of running it unannounced.
+ */
+export const JIG_SYSTEM_PROMPT = `You are running inside Jig, a supervised-coding tool. A human reviews and paces your file edits: writes made with the Edit, Write, and MultiEdit tools are gated — each one pauses for the human to see a diff and approve it. That review loop is the entire point of Jig.
+
+Bash commands are NOT gated, so a file change made through the shell lands silently and bypasses review. That defeats Jig's purpose. Follow these rules:
+
+- Never use Bash to create, modify, move, or delete files (\`>\`/\`>>\` redirects, \`sed -i\`, \`mv\`, \`rm\`, \`cp\`, \`tee\`, \`patch\`, \`git apply\`, heredocs into files, etc.) when the Edit, Write, or MultiEdit tools can do the same job. Reach for those gated tools by default.
+- Bash is for reading, searching, building, testing, installing, and running commands that do not write source files — those flow freely.
+- A few write tasks are genuinely better as a shell command: a project-wide symbol rename, a codemod, or a large mechanical move across many files. When that is truly the case, do NOT run it silently — first state in plain text what the command will change and why the shell is the better tool, then run it. A clear announcement is enough; you do not need to stop and ask for approval, since the human can see your message and steer if needed.`;
+
 /** The human's response to a plan: approve (execute) or request changes. */
 export interface PlanDecision {
   approved: boolean;
@@ -86,6 +103,9 @@ export function runJigSession(deps: RunSessionDeps): RunningSession {
       cwd: session.repoPath,
       permissionMode: deps.planMode ? "plan" : "default",
       canUseTool,
+      // Keep Claude Code's default system prompt and append Jig's backpressure
+      // guidance (keep writes in the gated tools; surface shell-writes first).
+      systemPrompt: { type: "preset", preset: "claude_code", append: JIG_SYSTEM_PROMPT },
       ...(deps.resume ? { resume: deps.resume } : {}),
       ...deps.options,
     },

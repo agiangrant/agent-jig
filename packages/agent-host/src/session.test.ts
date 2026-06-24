@@ -2,7 +2,7 @@ import { Pacer } from "@agent-jig/core";
 import { SqliteStorage } from "@agent-jig/store";
 import { describe, expect, it } from "vitest";
 import type { RunSessionDeps } from "./session.ts";
-import { runJigSession } from "./session.ts";
+import { JIG_SYSTEM_PROMPT, runJigSession } from "./session.ts";
 
 // A query() stand-in that yields a fixed message stream and then completes.
 function fakeQuery(messages: unknown[]): RunSessionDeps["queryImpl"] {
@@ -84,6 +84,36 @@ describe("runJigSession", () => {
 
     expect(capturedResume).toBe("claude-xyz");
     expect(seen).toEqual(["claude-xyz"]);
+    store.close();
+  });
+
+  it("appends Jig's backpressure guidance onto the Claude Code system prompt", async () => {
+    const store = new SqliteStorage(":memory:");
+    const session = store.createSession({ repoPath: "/r", taskPrompt: "t" });
+    let systemPrompt: unknown;
+    const queryImpl = ((args: { options?: { systemPrompt?: unknown } }) => {
+      systemPrompt = args.options?.systemPrompt;
+      async function* gen(): AsyncGenerator<never, void> {}
+      return Object.assign(gen(), {
+        interrupt: async () => {},
+        setPermissionMode: async () => {},
+        setModel: async () => {},
+      });
+    }) as unknown as RunSessionDeps["queryImpl"];
+
+    const running = runJigSession({
+      session,
+      prompt: "t",
+      pacer: new Pacer("realtime"),
+      store,
+      queryImpl,
+    });
+    await running.result;
+    expect(systemPrompt).toEqual({
+      type: "preset",
+      preset: "claude_code",
+      append: JIG_SYSTEM_PROMPT,
+    });
     store.close();
   });
 
