@@ -27,19 +27,87 @@ export async function listSystemFontsNative(): Promise<string[]> {
   return await invoke<string[]>("list_system_fonts");
 }
 
+// Notifications branch like the other native concerns: the desktop shell uses the
+// Tauri notification plugin (the web Notification API is absent in WKWebView),
+// while the browser uses the web Notification API. Both deliver the OS notification
+// banner + sound. The plugin is dynamically imported so it's code-split out of the
+// browser bundle (same pattern as pickFolderNative).
+
+/** "unsupported" where no notification mechanism is available. */
+export type NotifyPermission = "granted" | "denied" | "default" | "unsupported";
+
+/** Current notification permission, resolved against the active platform. */
+export async function currentNotificationPermission(): Promise<NotifyPermission> {
+  if (isTauri) {
+    try {
+      const { isPermissionGranted } = await import("@tauri-apps/plugin-notification");
+      return (await isPermissionGranted()) ? "granted" : "default";
+    } catch {
+      return "unsupported";
+    }
+  }
+  if (typeof Notification === "undefined") return "unsupported";
+  return Notification.permission;
+}
+
 /**
- * Best-effort desktop/browser notification — pulls an AFK reviewer back when an
- * edit has been waiting too long. Uses the web Notification API (available in the
- * browser and the Tauri webview); silently no-ops where unsupported or denied.
+ * Ask the OS for notification permission. MUST be called from a user gesture (a
+ * click) — Safari/WKWebView reject a request from a timer or effect. Returns the
+ * resulting permission (or "unsupported").
  */
-export async function notify(title: string, body: string): Promise<void> {
-  if (typeof Notification === "undefined") return;
+export async function requestNotificationPermission(): Promise<NotifyPermission> {
+  if (isTauri) {
+    try {
+      const { isPermissionGranted, requestPermission } = await import(
+        "@tauri-apps/plugin-notification"
+      );
+      if (await isPermissionGranted()) return "granted";
+      return (await requestPermission()) as NotifyPermission;
+    } catch {
+      return "unsupported";
+    }
+  }
+  if (typeof Notification === "undefined") return "unsupported";
   try {
-    if (Notification.permission === "default") await Notification.requestPermission();
-    if (Notification.permission === "granted") new Notification(title, { body });
+    if (Notification.permission === "default") return await Notification.requestPermission();
+    return Notification.permission;
+  } catch {
+    return Notification.permission;
+  }
+}
+
+/**
+ * Best-effort OS notification — pulls an AFK reviewer back. Showing it also plays
+ * the OS notification sound. Returns true when a notification was actually shown,
+ * so callers can fall back to an in-app sound where it's unsupported or not
+ * granted. Does NOT request permission — do that from a user gesture via
+ * requestNotificationPermission().
+ */
+export async function notify(title: string, body: string): Promise<boolean> {
+  if (isTauri) {
+    try {
+      const { isPermissionGranted, sendNotification } = await import(
+        "@tauri-apps/plugin-notification"
+      );
+      if (await isPermissionGranted()) {
+        sendNotification({ title, body });
+        return true;
+      }
+    } catch {
+      /* plugin unavailable */
+    }
+    return false;
+  }
+  if (typeof Notification === "undefined") return false;
+  try {
+    if (Notification.permission === "granted") {
+      new Notification(title, { body });
+      return true;
+    }
   } catch {
     /* notifications unsupported or blocked */
   }
+  return false;
 }
 
 const loadedFonts = new Set<string>();

@@ -7,6 +7,8 @@ import type {
   SessionConfig,
   SessionSummary,
 } from "@agent-jig/contracts";
+import { SvelteSet } from "svelte/reactivity";
+import { alerts } from "./lib/alerts.svelte.ts";
 import { JigConnection } from "./lib/connection.svelte.ts";
 import { toHunks } from "./lib/diff.ts";
 import { diffMode } from "./lib/diffMode.svelte.ts";
@@ -18,7 +20,6 @@ import {
   ensureDesktopFont,
   isTauri,
   listSystemFontsNative,
-  notify,
   pickFolderNative,
 } from "./lib/platform.ts";
 import { settings } from "./lib/settings.svelte.ts";
@@ -70,6 +71,7 @@ $effect(() => {
 });
 let themeJson = $state("");
 let themeError = $state("");
+let themeDragOver = $state(false);
 async function importTheme() {
   try {
     await theme.importTheme(themeJson);
@@ -79,6 +81,26 @@ async function importTheme() {
   } catch (e) {
     themeError = (e as Error).message ?? "invalid theme JSON";
   }
+}
+// Drop a theme file into the importer: load its text into the textarea so it can
+// be edited before applying — don't import on drop.
+async function onThemeDrop(e: DragEvent) {
+  e.preventDefault();
+  themeDragOver = false;
+  const file = e.dataTransfer?.files?.[0];
+  if (!file) return;
+  try {
+    themeJson = await file.text();
+    themeError = "";
+  } catch (err) {
+    themeError = (err as Error).message ?? "could not read file";
+  }
+}
+function onThemeDragOver(e: DragEvent) {
+  if (!e.dataTransfer?.types.includes("Files")) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "copy";
+  themeDragOver = true;
 }
 
 // In the Tauri desktop shell the Rust host injects the live sidecar port as a
@@ -493,6 +515,53 @@ let centerTab = $state<"review" | "activity" | "arch">("review");
 // never hidden behind another tab.
 $effect(() => {
   if (conn.plan || conn.question) centerTab = "review";
+});
+// --- Attention alert: flash the session's tab + play the notification sound when
+// a session newly needs the human. Driven off the cross-session summary so it
+// covers background tabs too (not just the active one): a session "needs you" when
+// it has a pending edit, a waiting question, or a plan to approve. We fire on the
+// no-attention → attention transition (per session), so a burst is one alert and
+// clearing it re-arms. The first summary seeds silently so we don't alarm on load.
+const flashingTabs = new SvelteSet<string>();
+const tabFlashTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const sessionNeedsHuman = new Map<string, boolean>();
+let alertSeeded = false;
+function needsHuman(s: SessionSummary): boolean {
+  return s.pendingEdits > 0 || s.awaitingQuestion || s.awaitingPlan;
+}
+function flashTab(id: string): void {
+  flashingTabs.add(id);
+  const prev = tabFlashTimers.get(id);
+  if (prev) clearTimeout(prev);
+  tabFlashTimers.set(
+    id,
+    setTimeout(() => {
+      flashingTabs.delete(id);
+      tabFlashTimers.delete(id);
+    }, 2400),
+  );
+}
+$effect(() => {
+  const summary = conn.summary;
+  if (summary === null) return; // not loaded yet / mid-reconnect — keep prior state
+  for (const s of summary) {
+    const now = needsHuman(s);
+    const before = sessionNeedsHuman.get(s.id) ?? false;
+    if (alertSeeded && now && !before) {
+      flashTab(s.id);
+      const label = s.awaitingPlan
+        ? "a plan is ready to review"
+        : s.awaitingQuestion
+          ? "a question is waiting"
+          : "an edit is waiting for review";
+      alerts.ping("Jig — review needed", `"${s.title ?? s.taskPrompt}": ${label}.`);
+    }
+    sessionNeedsHuman.set(s.id, now);
+  }
+  for (const id of [...sessionNeedsHuman.keys()]) {
+    if (!summary.some((s) => s.id === id)) sessionNeedsHuman.delete(id);
+  }
+  alertSeeded = true;
 });
 
 // Pull the language-server registry + install state when Settings opens.
@@ -1104,6 +1173,7 @@ function onGlobalKey(e: KeyboardEvent) {
       <div
         class="tab"
         class:active={s.id === activeId}
+        class:flash={flashingTabs.has(s.id)}
         class:dragging={dragId === s.id}
         class:over={overId === s.id && dragId !== null && dragId !== s.id}
         draggable={editing !== s.id}
@@ -1748,9 +1818,17 @@ function onGlobalKey(e: KeyboardEvent) {
   <!-- Elevated above Settings: the importer can be opened from within the Settings modal. -->
   <div class="overlay elevated">
     <button class="backdrop" aria-label="Close" onclick={() => (showTheme = false)}></button>
-    <div class="modal" role="dialog" aria-modal="true">
+    <div
+      class="modal"
+      class:dragover={themeDragOver}
+      role="dialog"
+      aria-modal="true"
+      ondragover={onThemeDragOver}
+      ondragleave={() => (themeDragOver = false)}
+      ondrop={onThemeDrop}
+    >
       <h3>Import VSCode theme</h3>
-      <p class="hint">Paste a VSCode color-theme JSON. It must include a <code>"name"</code>; <code>colors</code> theme the UI and <code>tokenColors</code> theme the code.</p>
+      <p class="hint">Paste or drop a VSCode color-theme JSON file. It must include a <code>"name"</code>; <code>colors</code> theme the UI and <code>tokenColors</code> theme the code. Edit it below before applying.</p>
       <textarea
         rows="10"
         bind:value={themeJson}
@@ -1794,6 +1872,18 @@ function onGlobalKey(e: KeyboardEvent) {
         <label for="set-lines">Line numbers</label>
         <div class="set-control">
           <input id="set-lines" type="checkbox" checked={diffMode.lineNumbers} onchange={() => diffMode.toggleLineNumbers()} />
+        </div>
+      </div>
+
+      <div class="set-row">
+        <label for="set-alerts">Sound &amp; flash alerts</label>
+        <div class="set-control">
+          {#if alerts.enabled && alerts.permission === "default"}
+            <button type="button" onclick={() => alerts.requestPermission()}>Allow notifications</button>
+          {:else if alerts.enabled && alerts.permission === "denied"}
+            <span class="set-hint">Notifications blocked — using in-app sound</span>
+          {/if}
+          <input id="set-alerts" type="checkbox" checked={alerts.enabled} onchange={() => alerts.toggle()} />
         </div>
       </div>
 
@@ -2211,6 +2301,31 @@ function onGlobalKey(e: KeyboardEvent) {
   }
   .tab.over {
     box-shadow: inset 0 2px 0 var(--accent);
+  }
+  /* Attention flash: a themed pulse on the tab of a session that newly needs the
+     human. Follows the active theme via --accent; pulses a few times then rests
+     (the static badge carries the lingering "still waiting" state). */
+  .tab.flash {
+    animation: gv-tab-flash 0.8s ease-in-out 3;
+  }
+  @keyframes gv-tab-flash {
+    0%,
+    100% {
+      background: transparent;
+      box-shadow: inset 0 0 0 0 transparent;
+    }
+    50% {
+      background: var(--accent-dim);
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    /* No strobe — hold a static accent highlight for the flash window instead. */
+    .tab.flash {
+      animation: none;
+      background: var(--accent-dim);
+      box-shadow: inset 0 0 0 1px var(--accent);
+    }
   }
   .tab-main {
     flex: 1;
@@ -3854,6 +3969,10 @@ function onGlobalKey(e: KeyboardEvent) {
     flex-direction: column;
     gap: var(--gap-sm);
     box-shadow: var(--shadow);
+  }
+  .modal.dragover {
+    border-color: var(--accent);
+    box-shadow: var(--shadow), 0 0 0 1px var(--accent) inset;
   }
   .modal h3 {
     margin: 0 0 var(--gap-sm);

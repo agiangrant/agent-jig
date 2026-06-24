@@ -12,6 +12,7 @@
     "@agent-jig/contracts": "workspace:*",
     "@tauri-apps/api": "^2.9.0",
     "@tauri-apps/plugin-dialog": "^2.4.0",
+    "@tauri-apps/plugin-notification": "^2.3.3",
     "shiki": "^4.2.0"
   },
   "devDependencies": {

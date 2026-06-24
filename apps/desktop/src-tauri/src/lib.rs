@@ -217,6 +217,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![list_system_fonts, load_font_data])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -253,6 +254,11 @@ pub fn run() {
                     .title("Jig")
                     .inner_size(1180.0, 800.0)
                     .min_inner_size(900.0, 600.0)
+                    // Let the webview's own HTML5 drag-and-drop handle file drops
+                    // (e.g. dropping a VSCode theme JSON into the importer). Tauri's
+                    // native handler would otherwise intercept OS drops before they
+                    // reach the DOM; we don't use Tauri-side file-drop anywhere.
+                    .disable_drag_drop_handler()
                     .initialization_script(&format!("window.__JIG_WS_URL__ = '{}';", ws_url));
 
             // macOS: frameless "overlay" title bar — the webview fills the whole
