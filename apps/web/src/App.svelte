@@ -2028,8 +2028,9 @@ function onGlobalKey(e: KeyboardEvent) {
       <div class="set-row">
         <span class="set-label">Density</span>
         <div class="set-control">
-          <button class="set-seg" class:on={settings.density === "dense"} onclick={() => settings.setDensity("dense")}>Dense</button>
           <button class="set-seg" class:on={settings.density === "calm"} onclick={() => settings.setDensity("calm")}>Calm</button>
+          <button class="set-seg" class:on={settings.density === "normal"} onclick={() => settings.setDensity("normal")}>Normal</button>
+          <button class="set-seg" class:on={settings.density === "dense"} onclick={() => settings.setDensity("dense")}>Dense</button>
         </div>
       </div>
 

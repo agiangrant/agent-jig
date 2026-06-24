@@ -7,8 +7,10 @@ const DENSITY_KEY = "jig:density";
 export type UiSize = "small" | "medium" | "large";
 const UI_SIZE_PX: Record<UiSize, number> = { small: 13, medium: 14, large: 16 };
 
-/** Component spacing scale. `dense` is the default; `calm` is the roomier mode. */
-export type Density = "dense" | "calm";
+/** Component spacing scale, roomy → tight. `normal` is the default; `calm` is
+ *  roomier, `dense` is extra-compact for small screens. */
+export type Density = "calm" | "normal" | "dense";
+const DENSITIES: readonly Density[] = ["calm", "normal", "dense"];
 
 // Default font stacks; a chosen font is prepended as the first family.
 const UI_DEFAULT = 'ui-monospace, "SF Mono", Menlo, monospace';
@@ -36,7 +38,8 @@ function loadUiSize(): UiSize {
   return v === "small" || v === "large" ? v : "medium";
 }
 function loadDensity(): Density {
-  return load(DENSITY_KEY, "dense") === "calm" ? "calm" : "dense";
+  const v = load(DENSITY_KEY, "normal") as Density;
+  return DENSITIES.includes(v) ? v : "normal";
 }
 function fontStack(chosen: string, fallback: string): string {
   const f = chosen.trim();

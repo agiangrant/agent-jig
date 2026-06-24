@@ -64,11 +64,12 @@
 }
 
 /* ── Density ─────────────────────────────────────────────────────────────
-   Component-level spacing/sizing tokens. `dense` is the default (and the
-   :root fallback before settings.apply() runs); `calm` is the roomier opt-in,
-   selected via Settings → data-density on <html>. */
+   Component-level spacing/sizing tokens. Three tiers, roomy → tight: `calm`,
+   `normal` (the default + the :root fallback before settings.apply() runs),
+   and `dense` (extra-compact, for small screens like a 14" laptop). Selected
+   via Settings → data-density on <html>. */
 :root,
-[data-density="dense"] {
+[data-density="normal"] {
   --pad: 12px;
   --pad-sm: 9px;
   --pad-xs: 6px;
@@ -97,6 +98,21 @@
   --radius-sm: 8px;
   --row: 42px;
   --leading: 1.65;
+}
+[data-density="dense"] {
+  --pad: 8px;
+  --pad-sm: 6px;
+  --pad-xs: 4px;
+  --gap: 6px;
+  --gap-sm: 4px;
+  --fs: 12px;
+  --fs-sm: 10px;
+  --fs-xs: 9px;
+  --fs-lg: 13px;
+  --radius: 6px;
+  --radius-sm: 5px;
+  --row: 26px;
+  --leading: 1.4;
 }
 
 @keyframes gv-pulse {
