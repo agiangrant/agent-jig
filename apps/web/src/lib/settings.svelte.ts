@@ -5,7 +5,7 @@ const UI_SIZE_KEY = "jig:uiSize";
 const DENSITY_KEY = "jig:density";
 
 export type UiSize = "small" | "medium" | "large";
-const UI_SIZE_PX: Record<UiSize, number> = { small: 13, medium: 14, large: 16 };
+const UI_SIZE_PX: Record<UiSize, number> = { small: 13, medium: 14, large: 17 };
 
 /** Component spacing scale, roomy → tight. `normal` is the default; `calm` is
  *  roomier, `dense` is extra-compact for small screens. */
@@ -60,7 +60,11 @@ class Settings {
     r.setProperty("--ui-font", fontStack(this.uiFont, UI_DEFAULT));
     r.setProperty("--code-font", fontStack(this.codeFont, CODE_DEFAULT));
     r.setProperty("--code-font-size", `${this.codeFontSize}px`);
-    r.setProperty("--ui-font-size", `${UI_SIZE_PX[this.uiSize]}px`);
+    const px = UI_SIZE_PX[this.uiSize];
+    r.setProperty("--ui-font-size", `${px}px`);
+    // Drive the density font tokens (--fs*) so UI size scales *all* component
+    // text, not just <body>. Medium (14px) → 1, so the default is unchanged.
+    r.setProperty("--ui-scale", String(px / UI_SIZE_PX.medium));
     document.documentElement.dataset.density = this.density;
   }
 

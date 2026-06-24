@@ -22,6 +22,10 @@
   --ui-font: ui-monospace, "SF Mono", Menlo, monospace;
   --code-font: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --ui-font-size: 14px;
+  /* UI-size multiplier: the density font tokens (--fs*) below are scaled by it,
+     so the "UI size" setting actually resizes component text, not just <body>.
+     Medium = 1 (tokens keep their base px); set by settings.apply(). */
+  --ui-scale: 1;
   --code-font-size: 12px;
   /* Height reserved at the top for a custom (frameless) title bar; 0 in the
      browser, set on the desktop's macOS overlay window so content + sticky
@@ -75,10 +79,10 @@
   --pad-xs: 6px;
   --gap: 9px;
   --gap-sm: 6px;
-  --fs: 13px;
-  --fs-sm: 11px;
-  --fs-xs: 10px;
-  --fs-lg: 14px;
+  --fs: calc(13px * var(--ui-scale));
+  --fs-sm: calc(11px * var(--ui-scale));
+  --fs-xs: calc(10px * var(--ui-scale));
+  --fs-lg: calc(14px * var(--ui-scale));
   --radius: 8px;
   --radius-sm: 6px;
   --row: 32px;
@@ -90,10 +94,10 @@
   --pad-xs: 9px;
   --gap: 15px;
   --gap-sm: 9px;
-  --fs: 14px;
-  --fs-sm: 12px;
-  --fs-xs: 11px;
-  --fs-lg: 15px;
+  --fs: calc(14px * var(--ui-scale));
+  --fs-sm: calc(12px * var(--ui-scale));
+  --fs-xs: calc(11px * var(--ui-scale));
+  --fs-lg: calc(15px * var(--ui-scale));
   --radius: 11px;
   --radius-sm: 8px;
   --row: 42px;
@@ -105,10 +109,10 @@
   --pad-xs: 4px;
   --gap: 6px;
   --gap-sm: 4px;
-  --fs: 12px;
-  --fs-sm: 10px;
-  --fs-xs: 9px;
-  --fs-lg: 13px;
+  --fs: calc(12px * var(--ui-scale));
+  --fs-sm: calc(10px * var(--ui-scale));
+  --fs-xs: calc(9px * var(--ui-scale));
+  --fs-lg: calc(13px * var(--ui-scale));
   --radius: 6px;
   --radius-sm: 5px;
   --row: 26px;
