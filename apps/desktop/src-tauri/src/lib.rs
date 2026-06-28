@@ -269,7 +269,11 @@ pub fn run() {
             {
                 builder = builder
                     .title_bar_style(tauri::TitleBarStyle::Overlay)
-                    .hidden_title(true);
+                    .hidden_title(true)
+                    // Center the native traffic lights vertically in our 46px
+                    // title bar (the default sits near the top, stranded in a
+                    // taller bar).
+                    .traffic_light_position(tauri::LogicalPosition::new(12.0, 24.0));
             }
 
             builder.build()?;
