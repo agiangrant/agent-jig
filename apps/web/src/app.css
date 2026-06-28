@@ -177,7 +177,8 @@
    sticky panels and header sit below the native traffic lights. Set by the web
    app when running inside the Tauri macOS shell. */
 [data-frameless] {
-  --titlebar-h: 28px;
+  /* Tall enough to host the session toolbar (title, connection, Stop, dial). */
+  --titlebar-h: 46px;
 }
 
 * {

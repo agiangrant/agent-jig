@@ -32,7 +32,11 @@ settings.apply(); // apply persisted fonts + tab size
 // (native traffic lights float over the webview), so reserve a top strip and a
 // drag region. No-op in the browser / on other platforms.
 const frameless =
-  isTauri && typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent);
+  (isTauri && typeof navigator !== "undefined" && /Mac/i.test(navigator.userAgent)) ||
+  // Dev-only preview of the frameless title bar in a plain browser (?frameless).
+  (import.meta.env.DEV &&
+    typeof location !== "undefined" &&
+    new URLSearchParams(location.search).has("frameless"));
 if (frameless) document.documentElement.dataset.frameless = "";
 
 let showSettings = $state(false);
@@ -1232,9 +1236,9 @@ function onGlobalKey(e: KeyboardEvent) {
 }
 </script>
 
-{#if frameless}
-  <!-- Frameless macOS title bar: a draggable strip the native traffic lights
-       overlay. The app content below is offset by --titlebar-h. -->
+{#if frameless && activeId === null}
+  <!-- Empty draggable strip when no session is open. With a session, the
+       header itself becomes the title bar (see header.as-titlebar). -->
   <div class="titlebar" data-tauri-drag-region></div>
 {/if}
 
@@ -1333,8 +1337,8 @@ function onGlobalKey(e: KeyboardEvent) {
     {#if activeId === null}
       <p class="empty big">No session selected. Create one to start supervising.</p>
     {:else}
-      <header>
-        <div class="head-top">
+      <header class:as-titlebar={frameless} data-tauri-drag-region={frameless ? "" : undefined}>
+        <div class="head-top" data-tauri-drag-region>
           <button
             class="head-toggle"
             class:on={sidebarOpen}
@@ -1344,15 +1348,15 @@ function onGlobalKey(e: KeyboardEvent) {
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M9 4v16" /></svg>
           </button>
-          <div class="crumb">
+          <div class="crumb" data-tauri-drag-region>
             {#if conn.session?.repoPath}
-              <span class="crumb-repo">{repoName(conn.session.repoPath)}</span>
-              <span class="crumb-sep">/</span>
+              <span class="crumb-repo" data-tauri-drag-region>{repoName(conn.session.repoPath)}</span>
+              <span class="crumb-sep" data-tauri-drag-region>/</span>
             {/if}
-            <h1 class="title">{conn.session?.title ?? conn.session?.taskPrompt ?? "Session"}</h1>
+            <h1 class="title" data-tauri-drag-region>{conn.session?.title ?? conn.session?.taskPrompt ?? "Session"}</h1>
           </div>
-          <div class="head-controls">
-            <span class="conn" class:on={conn.connected}>{conn.connected ? "live" : "reconnecting…"}</span>
+          <div class="head-controls" data-tauri-drag-region>
+            <span class="conn" class:on={conn.connected} data-tauri-drag-region>{conn.connected ? "live" : "reconnecting…"}</span>
             {#if conn.session?.status === "running"}
               <button
                 class="stop"
@@ -1360,7 +1364,7 @@ function onGlobalKey(e: KeyboardEvent) {
                 title="Stop the agent — resume any time by sending a message"
               >■ Stop</button>
             {:else if conn.session}
-              <span class="sess-status {conn.session.status}">{conn.session.status}</span>
+              <span class="sess-status {conn.session.status}" data-tauri-drag-region>{conn.session.status}</span>
             {/if}
             <div class="throttle-wrap">
               <button
@@ -1380,7 +1384,7 @@ function onGlobalKey(e: KeyboardEvent) {
                   Real-time
                 </span>
               </button>
-              <span class="throttle-sub">{conn.mode === "slowed" ? "Edits pause for your approval" : "Edits apply automatically"}</span>
+              {#if !frameless}<span class="throttle-sub">{conn.mode === "slowed" ? "Edits pause for your approval" : "Edits apply automatically"}</span>{/if}
             </div>
             <button
               class="head-toggle"
@@ -2837,6 +2841,38 @@ function onGlobalKey(e: KeyboardEvent) {
     border-bottom: 1px solid var(--border-soft);
     margin: 0 -24px 0;
     padding: var(--pad-sm) 24px;
+  }
+  /* Desktop (frameless macOS): the header IS the title bar — fixed full-width
+     across the top, draggable, inset past the native traffic lights. Scoped
+     under [data-frameless] to out-specify the redesign's `main.session header`. */
+  :global([data-frameless]) header.as-titlebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: var(--titlebar-h);
+    max-height: var(--titlebar-h);
+    z-index: 1000;
+    margin: 0;
+    padding: 0 14px 0 84px;
+    overflow: visible;
+    -webkit-app-region: drag;
+  }
+  header.as-titlebar .head-top {
+    height: 100%;
+  }
+  /* Make the whole bar — including inert title text and gaps — draggable… */
+  header.as-titlebar * {
+    -webkit-app-region: drag;
+  }
+  /* …but keep the interactive controls (and their inner svg/spans) clickable. */
+  header.as-titlebar button,
+  header.as-titlebar button *,
+  header.as-titlebar .throttle,
+  header.as-titlebar .throttle *,
+  header.as-titlebar input,
+  header.as-titlebar a {
+    -webkit-app-region: no-drag;
   }
   .head-top {
     display: flex;
