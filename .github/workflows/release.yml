@@ -64,13 +64,23 @@ jobs:
         # macOS is Apple-silicon only for now — the macos-13 (Intel) runners are
         # scarce and repeatedly stall; Intel can return later via cross-compile.
         include:
-          - { os: macos-14, name: macOS (Apple silicon), bundles: '' } # arm64
+          # macOS 26 (Tahoe) runner so the app links against the macOS 26 SDK —
+          # AppKit gates the (enlarged) traffic-light style on the linked SDK, so
+          # an older runner ships legacy/smaller window controls even on macOS 26.
+          - { os: macos-26, name: macOS (Apple silicon), bundles: '' } # arm64
           - { os: ubuntu-22.04, name: Linux x64, bundles: '--bundles deb,rpm' } # 22.04 = wide glibc/webkit compat
           - { os: windows-latest, name: Windows x64, bundles: '' }
     runs-on: ${{ matrix.os }}
     name: ${{ matrix.name }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Show macOS SDK (confirm 26/Tahoe for window-control style)
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          sw_vers
+          echo "Xcode: $(xcodebuild -version | head -1)"
+          echo "macOS SDK: $(xcrun --show-sdk-version)"
 
       - name: Install Linux build dependencies
         if: startsWith(matrix.os, 'ubuntu')
@@ -134,7 +144,7 @@ jobs:
             **Windows** — on the SmartScreen prompt, click **More info → Run anyway**.
 
             **Linux** — install the `.deb` (Debian/Ubuntu) or `.rpm` (Fedora/RHEL).
-          # No --target: each runner builds its own host arch (macos-14 → arm64,
-          # macos-13 → x64), so the Rust binary and the sidecar's native `claude`
+          # No --target: each runner builds its own host arch (macos-26 → arm64),
+          # so the Rust binary and the sidecar's native `claude`
           # binary always match. A universal build would pair a fat binary with a
           # single-arch sidecar.
