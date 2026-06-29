@@ -13,7 +13,7 @@ import { StructuralAnalyzer } from "@agent-jig/structural";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { WebSocketServer } from "ws";
-import { loadAgentConfig } from "./config.ts";
+import { loadAgentConfig, providerStatuses } from "./config.ts";
 import { type CreateInput, SessionManager } from "./manager.ts";
 import { serveWeb } from "./static.ts";
 
@@ -160,10 +160,12 @@ export async function startJigServer(opts: ServerOptions): Promise<RunningServer
     return c.json(parsed.data);
   });
 
-  // Which agent providers this server can run (the UI disables the rest) + default.
-  app.get("/providers", (c) =>
-    c.json({ providers: agentConfig.statuses, default: agentConfig.defaultProvider }),
-  );
+  // Which agent providers this server can run + default. Recomputed per request
+  // so a CLI installed after start-up is detected without a server restart.
+  app.get("/providers", (c) => {
+    const s = providerStatuses();
+    return c.json({ providers: s.statuses, default: s.defaultProvider });
+  });
 
   app.get("/sessions", (c) => c.json(manager.list()));
   app.post("/sessions", async (c) => {

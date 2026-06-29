@@ -574,10 +574,12 @@ $effect(() => {
 });
 
 // Load the repo file list + skills (for @file and /skill autocomplete) on connect.
+// Refresh the provider list too, so a CLI installed since launch is detected.
 $effect(() => {
   if (conn.connected && conn.session) {
     conn.requestFiles();
     conn.requestSkills();
+    void loadProviders();
   }
 });
 // A blocking plan/question lives in the Review view — pull focus there so it's

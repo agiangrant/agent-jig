@@ -8,15 +8,14 @@ import { AgentProvider, type ProviderStatus } from "@agent-jig/contracts";
 /**
  * Agent-provider configuration resolved from the environment. Credentials live
  * server-side (never in the browser); the UI only picks a provider + model and
- * reads {@link AgentServerConfig.statuses} to know which providers are ready.
+ * reads {@link AgentServerConfig.statuses} to know which providers are present.
  *
- * Auth mirrors how Claude works — via each CLI's own login (a ChatGPT/Google
- * subscription), with an API key as an alternative. A provider is "ready" when
- * its CLI is installed AND it has either a cached login or an env API key:
- * - Claude runs through the bundled Agent SDK (its own login) — always offered.
- * - Gemini: `gemini login` (→ `~/.gemini/oauth_creds.json`) or `GEMINI_API_KEY`
- *   / `GOOGLE_API_KEY`.
- * - Codex: `codex login` (→ `$CODEX_HOME/auth.json`) or `OPENAI_API_KEY`.
+ * "Available" means the CLI is installed (its binary is on the resolved PATH),
+ * mirroring how Claude is always offered via its bundled SDK. We deliberately do
+ * NOT gate on detecting a login file — auth lives in many places (env key, OAuth
+ * file, OS keychain), so a missing file is a poor signal; an unauthenticated CLI
+ * surfaces its own error at run time instead. API keys, when set, are still
+ * passed to the adapters.
  */
 export interface AgentServerConfig {
   /** Pre-selected provider in the New Session modal. */
@@ -59,24 +58,43 @@ const fileExists = (p: string): boolean => {
   }
 };
 
+const SENTINEL = "__JIG_PATH__";
+/** Memoized once per process — the login shell is spawned at most once. */
+let cachedPath: string | undefined;
+
 /**
- * A GUI-launched app inherits a minimal PATH, so (on macOS/Linux) ask the user's
- * login shell for its real PATH — the same trick the Tauri shell uses for node —
- * so CLIs installed via nvm/homebrew/npm are found just like in the terminal.
+ * A GUI-launched app inherits a minimal PATH, so on macOS/Linux ask the user's
+ * shell for its real PATH. We try an **interactive** login shell first (`-ilc`)
+ * because PATH additions from nvm/npm/Homebrew usually live in `.zshrc`/`.bashrc`
+ * (interactive rc files), which a plain login shell wouldn't source. A sentinel
+ * around the value lets us ignore any banner output rc files print. Called only
+ * with the real `process.env`, so the result is memoized for the process.
  */
 function resolvedPath(env: NodeJS.ProcessEnv): string {
   const base = env.PATH ?? "";
-  if (process.platform === "win32") return base;
-  try {
-    const shell = env.SHELL || "/bin/sh";
-    const out = execFileSync(shell, ["-lc", 'printf %s "$PATH"'], {
-      encoding: "utf8",
-      timeout: 3000,
-    });
-    return out.trim() ? `${out.trim()}${delimiter}${base}` : base;
-  } catch {
-    return base;
+  // No shell probe under Windows or tests (vitest sets VITEST).
+  if (process.platform === "win32" || env.VITEST) return base;
+  if (cachedPath !== undefined) return cachedPath;
+  const shell = env.SHELL || "/bin/zsh";
+  cachedPath = base;
+  for (const flags of [["-ilc"], ["-lc"]]) {
+    try {
+      const out = execFileSync(shell, [...flags, `printf '${SENTINEL}%s' "$PATH"`], {
+        encoding: "utf8",
+        timeout: 4000,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      const i = out.lastIndexOf(SENTINEL);
+      const p = i >= 0 ? out.slice(i + SENTINEL.length).trim() : "";
+      if (p) {
+        cachedPath = `${p}${delimiter}${base}`;
+        break;
+      }
+    } catch {
+      // try the next shell invocation, then fall back to the inherited PATH
+    }
   }
+  return cachedPath;
 }
 
 /** Whether `name` resolves to an executable on `path`. */
@@ -89,16 +107,6 @@ function commandExists(name: string, path: string): boolean {
     }
   }
   return false;
-}
-
-/** True if `$GEMINI_HOME/google_accounts.json` records a signed-in account. */
-function geminiAccountActive(geminiHome: string): boolean {
-  try {
-    const raw = JSON.parse(readFileSync(join(geminiHome, "google_accounts.json"), "utf8"));
-    return typeof raw.active === "string" && raw.active.length > 0;
-  } catch {
-    return false;
-  }
 }
 
 /** Codex caches its model list to `$CODEX_HOME/models_cache.json` — read its slugs. */
@@ -114,6 +122,39 @@ function codexModels(codexHome: string): string[] {
   }
 }
 
+/**
+ * Detect which providers are installed and their model suggestions — recomputed
+ * fresh (not cached at boot), so a CLI installed after start-up appears without a
+ * restart. Tests pass a plain env and get a fast PATH-only check (no shell spawn).
+ */
+export function providerStatuses(env: NodeJS.ProcessEnv = process.env): {
+  statuses: ProviderStatus[];
+  defaultProvider: AgentProvider;
+} {
+  const path = env === process.env ? resolvedPath(env) : (env.PATH ?? "");
+  const available: Record<AgentProvider, boolean> = {
+    claude: true, // always offered via the bundled Agent SDK
+    gemini: commandExists("gemini", path),
+    codex: commandExists("codex", path),
+  };
+  const codexHome = env.CODEX_HOME || join(homedir(), ".codex");
+  const models: Record<AgentProvider, string[]> = {
+    claude: MODELS.claude,
+    gemini: MODELS.gemini,
+    codex: codexModels(codexHome),
+  };
+  const statuses: ProviderStatus[] = AgentProvider.options.map((id) => ({
+    id,
+    label: LABELS[id],
+    available: available[id],
+    models: models[id],
+  }));
+  const requested = AgentProvider.safeParse(env.AGENT_SDK_DEFAULT);
+  const defaultProvider =
+    requested.success && available[requested.data] ? requested.data : "claude";
+  return { statuses, defaultProvider };
+}
+
 export function loadAgentConfig(env: NodeJS.ProcessEnv = process.env): AgentServerConfig {
   const geminiKey = env.GEMINI_API_KEY || env.GOOGLE_API_KEY || undefined;
   const codexKey = env.OPENAI_API_KEY || undefined;
@@ -124,44 +165,6 @@ export function loadAgentConfig(env: NodeJS.ProcessEnv = process.env): AgentServ
     codex: codexKey ? { apiKey: codexKey } : {},
   };
 
-  // A cached subscription login (like Claude's) makes a provider usable without
-  // an API key — detect each CLI's stored credentials.
-  const home = homedir();
-  const geminiHome = env.GEMINI_CLI_HOME || join(home, ".gemini");
-  // Gemini writes oauth_creds.json on "Login with Google"; google_accounts.json
-  // keeps the signed-in email (active=null after logout).
-  const geminiLoggedIn =
-    fileExists(join(geminiHome, "oauth_creds.json")) || geminiAccountActive(geminiHome);
-  const codexHome = env.CODEX_HOME || join(home, ".codex");
-  const codexLoggedIn = fileExists(join(codexHome, "auth.json"));
-
-  // Resolve the login-shell PATH for the real process; tests pass a plain env and
-  // get a fast PATH-only check (no shell spawn).
-  const path = env === process.env ? resolvedPath(env) : (env.PATH ?? "");
-
-  const available: Record<AgentProvider, boolean> = {
-    claude: true, // governed via the bundled Agent SDK's own login
-    gemini: (Boolean(geminiKey) || geminiLoggedIn) && commandExists("gemini", path),
-    codex: (Boolean(codexKey) || codexLoggedIn) && commandExists("codex", path),
-  };
-
-  // A requested default that isn't available falls back to Claude.
-  const requested = AgentProvider.safeParse(env.AGENT_SDK_DEFAULT);
-  const defaultProvider =
-    requested.success && available[requested.data] ? requested.data : "claude";
-
-  const models: Record<AgentProvider, string[]> = {
-    claude: MODELS.claude,
-    gemini: MODELS.gemini,
-    codex: codexModels(codexHome),
-  };
-
-  const statuses: ProviderStatus[] = AgentProvider.options.map((id) => ({
-    id,
-    label: LABELS[id],
-    available: available[id],
-    models: models[id],
-  }));
-
+  const { statuses, defaultProvider } = providerStatuses(env);
   return { defaultProvider, adapterConfig, statuses };
 }
