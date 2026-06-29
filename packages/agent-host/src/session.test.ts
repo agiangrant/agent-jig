@@ -1,11 +1,11 @@
 import { Pacer } from "@agent-jig/core";
 import { SqliteStorage } from "@agent-jig/store";
 import { describe, expect, it } from "vitest";
-import type { RunSessionDeps } from "./session.ts";
+import { type ClaudeAdapterDeps, claudeAdapter } from "./claude-adapter.ts";
 import { JIG_SYSTEM_PROMPT, runJigSession } from "./session.ts";
 
 // A query() stand-in that yields a fixed message stream and then completes.
-function fakeQuery(messages: unknown[]): RunSessionDeps["queryImpl"] {
+function fakeQuery(messages: unknown[]): ClaudeAdapterDeps["queryImpl"] {
   return (() => {
     async function* gen() {
       for (const m of messages) yield m;
@@ -15,7 +15,7 @@ function fakeQuery(messages: unknown[]): RunSessionDeps["queryImpl"] {
       setPermissionMode: async () => {},
       setModel: async () => {},
     });
-  }) as unknown as RunSessionDeps["queryImpl"];
+  }) as unknown as ClaudeAdapterDeps["queryImpl"];
 }
 
 describe("runJigSession", () => {
@@ -41,7 +41,7 @@ describe("runJigSession", () => {
       prompt: "t",
       pacer: new Pacer("realtime"),
       store,
-      queryImpl: fakeQuery(messages),
+      sdk: claudeAdapter({ queryImpl: fakeQuery(messages) }),
     });
     await running.result;
 
@@ -68,7 +68,7 @@ describe("runJigSession", () => {
         setPermissionMode: async () => {},
         setModel: async () => {},
       });
-    }) as unknown as RunSessionDeps["queryImpl"];
+    }) as unknown as ClaudeAdapterDeps["queryImpl"];
 
     const seen: string[] = [];
     const running = runJigSession({
@@ -76,7 +76,7 @@ describe("runJigSession", () => {
       prompt: "original task",
       pacer: new Pacer("realtime"),
       store,
-      queryImpl,
+      sdk: claudeAdapter({ queryImpl }),
       resume: "claude-xyz",
       onSessionId: (id) => seen.push(id),
     });
@@ -99,14 +99,14 @@ describe("runJigSession", () => {
         setPermissionMode: async () => {},
         setModel: async () => {},
       });
-    }) as unknown as RunSessionDeps["queryImpl"];
+    }) as unknown as ClaudeAdapterDeps["queryImpl"];
 
     const running = runJigSession({
       session,
       prompt: "t",
       pacer: new Pacer("realtime"),
       store,
-      queryImpl,
+      sdk: claudeAdapter({ queryImpl }),
     });
     await running.result;
     expect(systemPrompt).toEqual({
@@ -129,14 +129,14 @@ describe("runJigSession", () => {
         setPermissionMode: async () => {},
         setModel: async () => {},
       });
-    }) as unknown as RunSessionDeps["queryImpl"];
+    }) as unknown as ClaudeAdapterDeps["queryImpl"];
 
     const running = runJigSession({
       session,
       prompt: "t",
       pacer: new Pacer("realtime"),
       store,
-      queryImpl,
+      sdk: claudeAdapter({ queryImpl }),
       planMode: true,
     });
     await running.result;

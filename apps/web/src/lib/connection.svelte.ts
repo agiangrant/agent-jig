@@ -1,16 +1,22 @@
 import type {
+  AgentProvider,
   ChangeView,
   ClientToServer,
   DialMode,
   ImpactMap,
   JigEvent,
+  LineComment,
   LspServerInfo,
   PendingEdit,
   PendingPlan,
   PendingQuestion,
+  ReviewComment,
+  ReviewFileDiff,
+  ReviewStatus,
   ServerToClient,
   Session,
   SessionSummary,
+  Skill,
 } from "@agent-jig/contracts";
 
 /** Live view over the server's websocket stream, exposed as Svelte 5 runes. */
@@ -36,9 +42,44 @@ export class JigConnection {
   lspServers = $state<LspServerInfo[]>([]);
   /** One unified human↔system conversation: questions, sidecar replies, and steers. */
   conversation = $state<Array<{ role: "you" | "sidecar" | "steer"; text: string }>>([]);
+  /**
+   * Line comments the human has anchored to edits but not yet sent. They
+   * accumulate across edits and ship together on the next steer (Phase 1
+   * @mentions). Edit-anchored — kept separate from the free-text input.
+   */
+  lineComments = $state<LineComment[]>([]);
   connected = $state(false);
   /** A human-readable error to surface as a toast; cleared by the UI. */
   lastError = $state<string | null>(null);
+  /** PR-format net diff (first edit → last) for the review panel. */
+  reviewDiff = $state<ReviewFileDiff[]>([]);
+  /** The base commit the review diff is against. */
+  reviewBase = $state<string>("");
+  /** Repo file paths for @file mention autocomplete. */
+  files = $state<string[]>([]);
+  /** Discovered skills (repo + user) for the browser and /skill autocomplete. */
+  skills = $state<Skill[]>([]);
+  /** The latest model-generated SKILL.md draft (and any error), for the creator. */
+  skillDraft = $state<{ body: string; error: string | null } | null>(null);
+  /** The reviewer agent's run state. */
+  reviewStatus = $state<{
+    status: ReviewStatus;
+    provider: AgentProvider | null;
+    model: string | null;
+    error: string | null;
+  }>({ status: "idle", provider: null, model: null, error: null });
+
+  /** Review comments (human + AI), reduced from the event log by comment id. */
+  get reviewComments(): ReviewComment[] {
+    const byId = new Map<string, ReviewComment>();
+    for (const e of this.events) {
+      if (e.type === "review_comment") {
+        const c = e.payload as ReviewComment;
+        byId.set(c.id, c);
+      }
+    }
+    return [...byId.values()].filter((c) => !c.deleted);
+  }
 
   #ws: WebSocket | null = null;
   /** The current stream URL, so a dropped socket can reconnect to it. */
@@ -69,6 +110,13 @@ export class JigConnection {
     this.impactLoading = false;
     this.lspServers = [];
     this.conversation = [];
+    this.lineComments = [];
+    this.reviewDiff = [];
+    this.reviewBase = "";
+    this.files = [];
+    this.skills = [];
+    this.skillDraft = null;
+    this.reviewStatus = { status: "idle", provider: null, model: null, error: null };
     this.connected = false;
     this.lastError = null;
     this.#open(url);
@@ -166,6 +214,27 @@ export class JigConnection {
       case "lsp_servers":
         this.lspServers = msg.servers;
         break;
+      case "review_diff":
+        this.reviewDiff = msg.files;
+        this.reviewBase = msg.base;
+        break;
+      case "review_status":
+        this.reviewStatus = {
+          status: msg.status,
+          provider: msg.provider,
+          model: msg.model,
+          error: msg.error,
+        };
+        break;
+      case "files_list":
+        this.files = msg.files;
+        break;
+      case "skills_list":
+        this.skills = msg.skills;
+        break;
+      case "skill_draft":
+        this.skillDraft = { body: msg.body, error: msg.error };
+        break;
     }
   }
 
@@ -190,14 +259,68 @@ export class JigConnection {
     this.#send({ type: "reject_edit", editId, reason });
   }
 
-  sendDirective(text: string, anchorEditId: string | null = null): void {
-    this.conversation = [...this.conversation, { role: "steer", text }];
-    this.#send({ type: "send_directive", text, anchorEditId });
+  /** Pin a line comment to an edit; it rides along on the next steer. */
+  addLineComment(comment: LineComment): void {
+    this.lineComments = [...this.lineComments, comment];
   }
 
-  askSidecar(text: string): void {
+  removeLineComment(id: string): void {
+    this.lineComments = this.lineComments.filter((c) => c.id !== id);
+  }
+
+  clearLineComments(): void {
+    this.lineComments = [];
+  }
+
+  /**
+   * Steer the agent. Any pending line comments are shipped with this directive
+   * and then cleared. A directive with comments but no typed text is allowed.
+   */
+  sendDirective(text: string, anchorEditId: string | null = null): void {
+    const lineComments = this.lineComments;
+    const summary =
+      lineComments.length > 0
+        ? `${text ? `${text}\n` : ""}(${lineComments.length} line comment${
+            lineComments.length > 1 ? "s" : ""
+          })`
+        : text;
+    this.conversation = [...this.conversation, { role: "steer", text: summary }];
+    this.#send({ type: "send_directive", text, anchorEditId, lineComments });
+    this.clearLineComments();
+  }
+
+  askSidecar(
+    text: string,
+    provider: AgentProvider | null = null,
+    model: string | null = null,
+  ): void {
     this.conversation = [...this.conversation, { role: "you", text }];
-    this.#send({ type: "sidecar_message", text });
+    this.#send({ type: "sidecar_message", text, provider, model });
+  }
+
+  /** Ask the server for the repo file list (for @file autocomplete). */
+  requestFiles(): void {
+    this.#send({ type: "request_files" });
+  }
+
+  // --- Skills ---
+
+  requestSkills(): void {
+    this.#send({ type: "request_skills" });
+  }
+
+  saveSkill(scope: "repo" | "user", name: string, body: string): void {
+    this.#send({ type: "save_skill", scope, name, body });
+  }
+
+  /** Generate a SKILL.md draft (null provider/model = the session default). */
+  draftSkill(
+    prompt: string,
+    provider: AgentProvider | null = null,
+    model: string | null = null,
+  ): void {
+    this.skillDraft = null;
+    this.#send({ type: "draft_skill", prompt, provider, model });
   }
 
   /** Cleanly halt the agent. The session pauses; sending again resumes it. */
@@ -237,5 +360,46 @@ export class JigConnection {
   installLsp(serverId: string, path: string | null = null): void {
     if (path) this.impactLoading = true;
     this.#send({ type: "install_lsp", serverId, path });
+  }
+
+  // --- Code review ---
+
+  /** Ask the server to (re)compute the PR-format review diff. */
+  requestReviewDiff(): void {
+    this.#send({ type: "request_review_diff" });
+  }
+
+  /** Run the reviewer agent (null = the configured default provider/model). */
+  requestReview(provider: AgentProvider | null = null, model: string | null = null): void {
+    this.reviewStatus = { status: "running", provider, model, error: null };
+    this.#send({ type: "request_review", provider, model });
+  }
+
+  addReviewComment(c: {
+    path: string;
+    side: "old" | "new";
+    line: number;
+    lineText: string;
+    body: string;
+  }): void {
+    this.#send({ type: "add_review_comment", ...c });
+  }
+
+  resolveReviewComment(id: string, resolved: boolean): void {
+    this.#send({ type: "resolve_review_comment", id, resolved });
+  }
+
+  deleteReviewComment(id: string): void {
+    this.#send({ type: "delete_review_comment", id });
+  }
+
+  /** Send all unresolved review comments back to the coding agent as fixes. */
+  submitReview(text = ""): void {
+    this.conversation = [...this.conversation, { role: "steer", text: "Submitted code review" }];
+    this.#send({ type: "submit_review", text });
+  }
+
+  setAutoReview(enabled: boolean): void {
+    this.#send({ type: "set_auto_review", enabled });
   }
 }

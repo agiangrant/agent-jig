@@ -1,7 +1,9 @@
 <script lang="ts">
 import type {
+  AgentProvider,
   DialMode,
   JigEvent,
+  ProvidersInfo,
   RiskRule,
   Session,
   SessionConfig,
@@ -13,9 +15,14 @@ import { JigConnection } from "./lib/connection.svelte.ts";
 import { toHunks } from "./lib/diff.ts";
 import { diffMode } from "./lib/diffMode.svelte.ts";
 import { countAddsDels, rangeLabel } from "./lib/fileDiff.ts";
+import AgentPicker from "./lib/AgentPicker.svelte";
 import FileDiff from "./lib/FileDiff.svelte";
 import FilePreview from "./lib/FilePreview.svelte";
 import ImpactMap from "./lib/ImpactMap.svelte";
+import Markdown from "./lib/Markdown.svelte";
+import MarkdownInput from "./lib/MarkdownInput.svelte";
+import ReviewPanel from "./lib/ReviewPanel.svelte";
+import SkillsPanel from "./lib/SkillsPanel.svelte";
 import {
   ensureDesktopFont,
   isTauri,
@@ -40,6 +47,7 @@ const frameless =
 if (frameless) document.documentElement.dataset.frameless = "";
 
 let showSettings = $state(false);
+let showSkills = $state(false);
 let showTheme = $state(false);
 
 // Font suggestions: the machine's actual installed families when the Local Font
@@ -126,6 +134,18 @@ async function loadConfig() {
   }
 }
 void loadConfig();
+
+// Which agent providers this server can run, for the New Session modal + Settings.
+let providers = $state<ProvidersInfo | null>(null);
+async function loadProviders() {
+  try {
+    providers = (await (await fetch(`${httpBase}/providers`)).json()) as ProvidersInfo;
+  } catch {
+    /* server momentarily unavailable — keep the last/empty list */
+  }
+}
+void loadProviders();
+
 async function saveConfig() {
   if (!config) return;
   try {
@@ -400,6 +420,8 @@ let newRepo = $state("");
 let newTask = $state("");
 let newWorktree = $state(false);
 let newPlan = $state(false);
+let newAgent = $state<AgentProvider>(settings.agentSdk);
+let newModel = $state(settings.agentModel);
 let creating = $state(false);
 let createError = $state("");
 
@@ -456,6 +478,8 @@ function openNew() {
   newTask = "";
   newWorktree = opts.worktree;
   newPlan = opts.plan;
+  newAgent = settings.agentSdk;
+  newModel = settings.modelFor(newAgent);
   createError = "";
   showNew = true;
 }
@@ -490,6 +514,8 @@ async function createSession() {
         prompt: newTask.trim(),
         worktree: newWorktree,
         planMode: newPlan,
+        agentSdk: newAgent,
+        agentModel: newModel.trim() || null,
       }),
     });
     if (!res.ok) {
@@ -500,6 +526,8 @@ async function createSession() {
     const s = (await res.json()) as Session;
     rememberFolder(newRepo.trim());
     saveNewOpts(); // remember worktree/plan choices for the next new session
+    settings.setAgentSdk(newAgent); // remember the agent + its model for next time
+    settings.setModelFor(newAgent, newModel.trim());
     showNew = false;
     await loadSessions();
     select(s.id);
@@ -514,11 +542,43 @@ function repoName(path: string): string {
 const toggle = () => conn.setDial(conn.mode === "slowed" ? "realtime" : "slowed");
 
 // --- Center workspace tabs (Observe → Understand → Steer, as three views) ---
-let centerTab = $state<"review" | "activity" | "arch">("review");
+let centerTab = $state<"feed" | "changes" | "activity" | "arch">("feed");
+const reviewOpenCount = $derived(conn.reviewComments.filter((c) => !c.resolved).length);
+const sessionDone = $derived(
+  conn.session?.status === "done" || conn.session?.status === "error",
+);
+
+// Client-driven auto-review: when a session with auto-review enabled finishes,
+// run the developer's configured default reviewer once (so it honors Settings).
+// On a clean finish we also surface the Changes (review) tab.
+let autoReviewedFor = $state<string | null>(null);
+let switchedToChangesFor = $state<string | null>(null);
+$effect(() => {
+  const s = conn.session;
+  if (!s || !sessionDone) return;
+  if (s.autoReview && autoReviewedFor !== s.id && conn.reviewStatus.status === "idle") {
+    if (!conn.reviewComments.some((c) => c.author !== "human")) {
+      autoReviewedFor = s.id;
+      conn.requestReview(settings.reviewerSdk, settings.reviewerModelFor(settings.reviewerSdk) || null);
+    }
+  }
+  if (switchedToChangesFor !== s.id) {
+    switchedToChangesFor = s.id;
+    centerTab = "changes";
+  }
+});
+
+// Load the repo file list + skills (for @file and /skill autocomplete) on connect.
+$effect(() => {
+  if (conn.connected && conn.session) {
+    conn.requestFiles();
+    conn.requestSkills();
+  }
+});
 // A blocking plan/question lives in the Review view — pull focus there so it's
 // never hidden behind another tab.
 $effect(() => {
-  if (conn.plan || conn.question) centerTab = "review";
+  if (conn.plan || conn.question) centerTab = "feed";
 });
 // --- Attention alert: flash the session's tab + play the notification sound when
 // a session newly needs the human. Driven off the cross-session summary so it
@@ -690,7 +750,7 @@ let expandedIntents = $state<Record<string, boolean>>({}); // open groups in "Ed
 
 // Leaving Review (or losing the queue) drops any open file preview.
 $effect(() => {
-  if (centerTab !== "review") previewPath = null;
+  if (centerTab !== "feed") previewPath = null;
 });
 
 const focusedEvent = $derived(focusedEditId ? editEvent(focusedEditId) : undefined);
@@ -957,6 +1017,12 @@ function reviewKey(e: KeyboardEvent): boolean {
 
 // --- Conversation: ask the sidecar, or steer the agent ---
 let message = $state("");
+// Per-message model for the chat (Ask = second opinion). Null = the session's
+// own provider/model (uses the fast persistent sidecar).
+let chatProviderOverride = $state<AgentProvider | null>(null);
+let chatModelOverride = $state<string | null>(null);
+const chatProvider = $derived(chatProviderOverride ?? conn.session?.agentSdk ?? "claude");
+const chatModel = $derived(chatModelOverride ?? conn.session?.agentModel ?? "");
 // A directive can be anchored to a specific edit ("Re: your edit to X — …").
 let anchorEditId = $state<string | null>(null);
 const anchorPath = $derived(anchorEditId ? filePath(editEvent(anchorEditId)?.payload) : "");
@@ -969,15 +1035,37 @@ const stopped = $derived(conn.session != null && conn.session.status !== "runnin
 function ask() {
   const t = message.trim();
   if (!t) return;
-  conn.askSidecar(t);
+  // Only send an override when the developer changed the picker, so the default
+  // keeps using the fast persistent sidecar.
+  conn.askSidecar(t, chatProviderOverride, chatModelOverride?.trim() || null);
   message = "";
 }
 function steer() {
   const t = message.trim();
-  if (!t) return;
-  conn.sendDirective(t, anchorEditId);
+  // Allow a send carrying only line comments (no typed message).
+  if (!t && conn.lineComments.length === 0) return;
+  conn.sendDirective(t, anchorEditId); // also ships + clears pending line comments
   message = "";
   anchorEditId = null;
+}
+
+// Pending line comments grouped by file, for the compose-bar tray. Each chip
+// shows {basename}:{line}; clicking focuses that edit and scrolls to the line.
+const commentGroups = $derived.by(() => {
+  const groups = new Map<string, { path: string; comments: typeof conn.lineComments }>();
+  for (const c of conn.lineComments) {
+    let g = groups.get(c.path);
+    if (g === undefined) {
+      g = { path: c.path, comments: [] };
+      groups.set(c.path, g);
+    }
+    g.comments.push(c);
+  }
+  return [...groups.values()];
+});
+function jumpToComment(c: (typeof conn.lineComments)[number]) {
+  // Focus the commented edit so its diff (with the comment) is shown.
+  if (conn.queue.some((p) => p.editId === c.editId)) focusedEditId = c.editId;
 }
 
 // --- Answering the agent's AskUserQuestion ---
@@ -1074,6 +1162,7 @@ const rootCommands = $derived<Command[]>([
       ]
     : []),
   { id: "settings", label: "Settings…", run: () => (showSettings = true) },
+  { id: "skills", label: "Skills…", run: () => (showSkills = true) },
   { id: "new", label: "New session…", run: openNew },
   { id: "import-theme", label: "Import VSCode theme…", run: () => (showTheme = true) },
   // Tabs: searchable by title and repo.
@@ -1158,7 +1247,7 @@ function paletteKey(e: KeyboardEvent) {
 // the modifier is held we show number hints on the targets (cleared on key-up or
 // when the window loses focus). `code` (Digit1…) is used so ⌥ remapping the key
 // on macOS doesn't matter. ---
-const CENTER_TABS = ["review", "activity", "arch"] as const;
+const CENTER_TABS = ["feed", "changes", "activity", "arch"] as const;
 let cmdHints = $state(false);
 let altHints = $state(false);
 function trackModifiers(e: KeyboardEvent): void {
@@ -1313,6 +1402,10 @@ function onGlobalKey(e: KeyboardEvent) {
     </div>
 
     <div class="nav-footer">
+      <button class="settings-btn" onclick={() => (showSkills = true)}>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M13 2 3 14h7l-1 8 10-12h-7z" /></svg>
+        Skills
+      </button>
       <button class="settings-btn" onclick={() => (showSettings = true)}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
         Settings
@@ -1400,25 +1493,33 @@ function onGlobalKey(e: KeyboardEvent) {
       </header>
 
       <div class="ctabs">
-        <button class="ctab" class:on={centerTab === "review"} onclick={() => (centerTab = "review")}>
-          Review
-          {#if conn.queue.length > 0}<span class="ctab-badge">{conn.queue.length}</span>{/if}
+        <button class="ctab" class:on={centerTab === "feed"} onclick={() => (centerTab = "feed")}>
+          Feed
+          {#if conn.queue.length > 0}<span class="ctab-badge warm">{conn.queue.length}</span>{/if}
           {#if cmdHints}<span class="kbd-num">1</span>{/if}
+        </button>
+        <button class="ctab" class:on={centerTab === "changes"} onclick={() => (centerTab = "changes")}>
+          Changes
+          {#if reviewOpenCount > 0}<span class="ctab-badge danger">{reviewOpenCount}</span>{/if}
+          {#if cmdHints}<span class="kbd-num">2</span>{/if}
         </button>
         <button class="ctab" class:on={centerTab === "activity"} onclick={() => (centerTab = "activity")}>
           Activity
           {#if conn.events.length > 0}<span class="ctab-count">{conn.events.length}</span>{/if}
-          {#if cmdHints}<span class="kbd-num">2</span>{/if}
+          {#if cmdHints}<span class="kbd-num">3</span>{/if}
         </button>
         <button class="ctab" class:on={centerTab === "arch"} onclick={() => (centerTab = "arch")}>
           Architecture
           {#if touchedCount > 0}<span class="ctab-count">{touchedCount}</span>{/if}
-          {#if cmdHints}<span class="kbd-num">3</span>{/if}
+          {#if cmdHints}<span class="kbd-num">4</span>{/if}
         </button>
       </div>
 
       <section class="left">
-          {#if centerTab === "review"}
+          {#if centerTab === "changes"}
+            <ReviewPanel {conn} {providers} />
+          {/if}
+          {#if centerTab === "feed"}
             {#if conn.plan}
               {@const pl = conn.plan}
               <div class="tab-scroll gv-scroll">
@@ -1520,6 +1621,15 @@ function onGlobalKey(e: KeyboardEvent) {
                         path={focusedPath}
                         base={httpBase}
                         {sessionId}
+                        comments={conn.lineComments.filter((c) => c.editId === focusedEditId)}
+                        onAddComment={(c) =>
+                          conn.addLineComment({
+                            ...c,
+                            id: crypto.randomUUID(),
+                            editId: focusedEditId ?? "",
+                            path: focusedPath,
+                          })}
+                        onRemoveComment={(id) => conn.removeLineComment(id)}
                       />
                     {/key}
 
@@ -1755,13 +1865,44 @@ function onGlobalKey(e: KeyboardEvent) {
             <div class="msg {m.role}">
               {#if m.role === "sidecar"}<span class="tag">sidecar</span>{/if}
               {#if m.role === "steer"}<span class="tag steer">→ sent to agent</span>{/if}
-              {m.text}
+              <Markdown text={m.text} />
             </div>
           {/each}
         </div>
         <form class="compose" onsubmit={(e) => { e.preventDefault(); steer(); }}>
           {#if stopped}
             <p class="resume-hint">Stopped — send a message to resume where the agent left off.</p>
+          {/if}
+          {#if conn.lineComments.length > 0}
+            <!-- Edit-anchored line comments, pending send. Kept in their own tray
+                 (not the free-text input) so a later @mention slice can own that box. -->
+            <div class="cmt-tray">
+              <div class="cmt-tray-head">
+                Comments on edits · {conn.lineComments.length}
+              </div>
+              {#each commentGroups as g (g.path)}
+                <div class="cmt-file">
+                  <span class="cmt-file-name" title={g.path}>{baseOf(g.path)}</span>
+                  {#each g.comments as c (c.id)}
+                    <button
+                      type="button"
+                      class="cmt-pin"
+                      title={c.body}
+                      onclick={() => jumpToComment(c)}>
+                      :{c.line}
+                      <span
+                        class="cmt-pin-x"
+                        role="button"
+                        tabindex="-1"
+                        aria-label="Remove comment"
+                        onclick={(e) => { e.stopPropagation(); conn.removeLineComment(c.id); }}
+                        onkeydown={(e) => { if (e.key === "Enter") { e.stopPropagation(); conn.removeLineComment(c.id); } }}
+                        >✕</span>
+                    </button>
+                  {/each}
+                </div>
+              {/each}
+            </div>
           {/if}
           {#if anchorEditId}
             <div class="anchor-chip">
@@ -1770,12 +1911,26 @@ function onGlobalKey(e: KeyboardEvent) {
             </div>
           {/if}
           <div class="compose-card">
-            <input
-              type="text"
+            <MarkdownInput
               bind:value={message}
-              placeholder={stopped ? "Send a message to resume…" : "Ask a question, or steer the agent…"}
+              files={conn.files}
+              skills={conn.skills.map((s) => ({ name: s.name, description: s.description }))}
+              placeholder={stopped ? "Send a message to resume…" : "Ask, steer, @file or /skill…"}
+              onsubmit={steer}
             />
             <div class="actions">
+              <AgentPicker
+                compact
+                placement="up"
+                {providers}
+                provider={chatProvider}
+                model={chatModel}
+                onpick={(p, m) => {
+                  chatProviderOverride = p;
+                  chatModelOverride = m;
+                }}
+              />
+              <span class="actions-spacer"></span>
               <button type="button" class="ask" onclick={ask}>Ask</button>
               <button type="submit" class="send">{stopped ? "Resume" : "Send"}</button>
             </div>
@@ -1810,7 +1965,7 @@ function onGlobalKey(e: KeyboardEvent) {
         <span class="sb-metric">{conn.events.length} event{conn.events.length === 1 ? "" : "s"}</span>
         {#if conn.mode === "slowed" && conn.queue.length > 0}
           <span class="sb-div"></span>
-          <button class="sb-pending" onclick={() => (centerTab = "review")} title="Go to review">
+          <button class="sb-pending" onclick={() => (centerTab = "feed")} title="Go to feed">
             {conn.queue.length} pending
           </button>
         {/if}
@@ -1918,6 +2073,19 @@ function onGlobalKey(e: KeyboardEvent) {
       <label for="task">Task</label>
       <textarea id="task" rows="6" use:focusOnMount bind:value={newTask} placeholder="Describe the work — multi-line is fine…"></textarea>
 
+      <div class="agent-row">
+        <span class="set-label">Agent</span>
+        <AgentPicker
+          {providers}
+          provider={newAgent}
+          model={newModel}
+          onpick={(p, m) => {
+            newAgent = p;
+            newModel = m;
+          }}
+        />
+      </div>
+
       <label class="check">
         <input type="checkbox" bind:checked={newWorktree} />
         Run in an isolated git worktree
@@ -1969,11 +2137,68 @@ function onGlobalKey(e: KeyboardEvent) {
   </div>
 {/if}
 
+{#if showSkills}
+  <div class="overlay">
+    <button class="backdrop" aria-label="Close" onclick={() => (showSkills = false)}></button>
+    <div class="modal skills-modal" role="dialog" aria-modal="true">
+      <div class="skills-modal-head">
+        <h3>Skills</h3>
+        <button type="button" onclick={() => (showSkills = false)}>Close</button>
+      </div>
+      <SkillsPanel {conn} {providers} />
+    </div>
+  </div>
+{/if}
+
 {#if showSettings}
   <div class="overlay">
     <button class="backdrop" aria-label="Close" onclick={() => (showSettings = false)}></button>
     <div class="modal settings" role="dialog" aria-modal="true">
       <h3>Settings</h3>
+
+      <div class="set-row">
+        <span class="set-label">Default agent</span>
+        <div class="set-control">
+          <AgentPicker
+            {providers}
+            provider={settings.agentSdk}
+            model={settings.modelFor(settings.agentSdk)}
+            align="right"
+            onpick={(p, m) => {
+              settings.setAgentSdk(p);
+              settings.setModelFor(p, m);
+            }}
+          />
+        </div>
+      </div>
+
+      <div class="set-row">
+        <span class="set-label">Default reviewer</span>
+        <div class="set-control">
+          <AgentPicker
+            {providers}
+            provider={settings.reviewerSdk}
+            model={settings.reviewerModelFor(settings.reviewerSdk)}
+            align="right"
+            onpick={(p, m) => {
+              settings.setReviewerSdk(p);
+              settings.setReviewerModelFor(p, m);
+            }}
+          />
+        </div>
+      </div>
+
+      {#if providers}
+        <p class="set-hint set-agents-hint">
+          Sign in to each CLI (<code>codex login</code>; run <code>gemini</code> → Login with
+          Google) or set an API key — read from the server environment.
+          {#each providers.providers as p (p.id)}
+            <span class="agent-status" class:off={!p.available}>
+              {p.label}: {p.available ? "ready" : "not detected"}
+            </span>
+          {/each}
+        </p>
+      {/if}
 
       <div class="set-row">
         <label for="set-theme">Theme</label>
@@ -2763,6 +2988,18 @@ function onGlobalKey(e: KeyboardEvent) {
   .set-hint {
     color: var(--muted);
     font-size: var(--fs-xs);
+  }
+  .set-agents-hint {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--gap-sm);
+    margin: 0 0 var(--gap);
+  }
+  .agent-status {
+    color: var(--ok);
+  }
+  .agent-status.off {
+    color: var(--muted);
   }
   .link-btn {
     background: none;
@@ -3889,6 +4126,62 @@ function onGlobalKey(e: KeyboardEvent) {
     color: var(--fg);
   }
 
+  /* Pending edit-comments tray: dense, grouped by file, line numbers as chips. */
+  .cmt-tray {
+    margin-bottom: var(--gap-sm);
+    padding: var(--pad-xs) var(--pad-sm);
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--accent);
+    border-radius: var(--radius-sm);
+  }
+  .cmt-tray-head {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    margin-bottom: var(--gap-sm);
+  }
+  .cmt-file {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    margin-top: 3px;
+  }
+  .cmt-file-name {
+    font-size: var(--fs-sm);
+    color: var(--fg);
+    margin-right: 2px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 45%;
+  }
+  .cmt-pin {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 5px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    color: var(--accent);
+    font-family: var(--code-font);
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .cmt-pin:hover {
+    border-color: var(--accent);
+  }
+  .cmt-pin-x {
+    color: var(--muted);
+    font-size: 10px;
+  }
+  .cmt-pin-x:hover {
+    color: var(--danger);
+  }
+
   .tool {
     color: var(--muted);
     font-size: var(--fs-sm);
@@ -3982,33 +4275,22 @@ function onGlobalKey(e: KeyboardEvent) {
   .compose-card:focus-within {
     border-color: var(--accent);
   }
-  .compose input {
-    width: 100%;
-    background: transparent;
-    border: 0;
-    padding: var(--pad-xs) 2px;
-    color: var(--fg);
-    font: inherit;
-  }
-  .compose input:focus {
-    outline: none;
-  }
-  .compose input::placeholder {
-    color: var(--text-3);
-  }
   .actions {
     display: flex;
+    align-items: center;
     gap: var(--gap-sm);
     margin-top: var(--gap-sm);
   }
   .actions button {
-    flex: 1;
+    flex: 0 0 auto;
+    min-width: 4.5em;
     border-radius: var(--radius-sm);
-    padding: var(--pad-xs) var(--pad-sm);
+    padding: var(--pad-xs) var(--pad);
     cursor: pointer;
     font: inherit;
     font-weight: 600;
   }
+  .actions-spacer { flex: 1 1 auto; }
   .actions .ask {
     background: transparent;
     color: var(--fg);
@@ -4135,6 +4417,24 @@ function onGlobalKey(e: KeyboardEvent) {
     gap: var(--gap-sm);
     box-shadow: var(--shadow);
   }
+  .modal.skills-modal {
+    max-width: 900px;
+  }
+  .skills-modal-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .skills-modal-head h3 { margin: 0; }
+  .skills-modal-head button {
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    color: var(--fg);
+    border-radius: var(--radius-sm);
+    padding: var(--pad-xs) var(--pad-sm);
+    cursor: pointer;
+    font: inherit;
+  }
   .modal.dragover {
     border-color: var(--accent);
     box-shadow: var(--shadow), 0 0 0 1px var(--accent) inset;
@@ -4161,6 +4461,12 @@ function onGlobalKey(e: KeyboardEvent) {
   }
   .repo-field {
     display: flex;
+    gap: var(--gap-sm);
+  }
+  .agent-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     gap: var(--gap-sm);
   }
   .repo-field input {
@@ -4284,6 +4590,10 @@ function onGlobalKey(e: KeyboardEvent) {
     display: inline-flex;
     align-items: center;
     justify-content: center;
+  }
+  .ctab-badge.danger {
+    background: var(--danger);
+    color: #fff;
   }
   .ctab-count {
     color: var(--text-3);

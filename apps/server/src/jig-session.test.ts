@@ -87,7 +87,12 @@ describe("JigSession stop & resume", () => {
     expect(gs.summary().resumable).toBe(true);
 
     // Steering a finished session resumes it with the directive as the next turn.
-    gs.handle({ type: "send_directive", text: "now the next thing", anchorEditId: null });
+    gs.handle({
+      type: "send_directive",
+      text: "now the next thing",
+      anchorEditId: null,
+      lineComments: [],
+    });
     expect(rec.resumes[1]).toBe("claude-1"); // re-attached to the saved session
     expect(gs.meta().status).toBe("running"); // back to live immediately
     await waitFor(() => rec.firstMessages.length === 2);

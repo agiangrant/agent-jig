@@ -4,7 +4,7 @@ import { isAbsolute, join } from "node:path";
 import type { JigEvent } from "@agent-jig/contracts";
 import { extractPath, isWriteClass, type Pacer, scoreRisk } from "@agent-jig/core";
 import type { Storage } from "@agent-jig/store";
-import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
+import type { GateFn } from "./agent-sdk.ts";
 import type { ProvenanceTracker } from "./provenance.ts";
 
 export interface GateDeps {
@@ -68,12 +68,13 @@ function withLineNumbers(
 }
 
 /**
- * The SDK `canUseTool` callback — where backpressure is applied. Jig is the
- * permission authority (the human is in the web UI). A write-class tool in
- * `slowed` mode awaits {@link Pacer.requestGate} and genuinely blocks; everything
- * else is logged and allowed at once.
+ * Jig's gate — where backpressure is applied. Jig is the permission authority
+ * (the human is in the web UI). A write-class tool in `slowed` mode awaits
+ * {@link Pacer.requestGate} and genuinely blocks; everything else is logged and
+ * allowed at once. Provider-agnostic: each adapter maps {@link GateDecision} onto
+ * its CLI's approve/reject handshake.
  */
-export function makeCanUseTool(deps: GateDeps): CanUseTool {
+export function makeGate(deps: GateDeps): GateFn {
   const { sessionId, pacer, store, onEvent, tracker, askQuestion, reviewPlan, cwd } = deps;
   const config = store.getConfig();
 
@@ -131,8 +132,8 @@ export function makeCanUseTool(deps: GateDeps): CanUseTool {
       store.setEventGateState(call.id, "open");
       onEvent?.({ ...call, gateState: "open" });
       return decision.approved
-        ? { behavior: "allow", updatedInput: input }
-        : { behavior: "deny", message: decision.message || "Please revise the plan." };
+        ? { allow: true, updatedInput: input }
+        : { allow: false, message: decision.message || "Please revise the plan." };
     }
 
     // AskUserQuestion: block on the human, then hand the answer back as the deny
@@ -144,7 +145,7 @@ export function makeCanUseTool(deps: GateDeps): CanUseTool {
       // (re-emit the same event id; clients upsert by id).
       store.setEventGateState(call.id, "open");
       onEvent?.({ ...call, gateState: "open" });
-      return { behavior: "deny", message: answer };
+      return { allow: false, message: answer };
     }
 
     if (write && editId !== null) {
@@ -175,12 +176,12 @@ export function makeCanUseTool(deps: GateDeps): CanUseTool {
           outcome.reason && outcome.reason.length > 0
             ? outcome.reason
             : "The developer rejected this edit; please revise it.";
-        return { behavior: "deny", message };
+        return { allow: false, message };
       }
     }
 
-    // The SDK validates this result: `updatedInput` must be present (echo the
-    // original input back), otherwise the tool is rejected with a ZodError.
-    return { behavior: "allow", updatedInput: input };
+    // `updatedInput` must echo the original input back: the Claude adapter passes
+    // it straight into the SDK result, which rejects with a ZodError otherwise.
+    return { allow: true, updatedInput: input };
   };
 }

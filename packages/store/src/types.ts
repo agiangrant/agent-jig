@@ -1,4 +1,5 @@
 import type {
+  AgentProvider,
   EventType,
   GateState,
   JigEvent,
@@ -12,6 +13,14 @@ export interface NewSession {
   taskPrompt: string;
   /** Start the agent in plan mode (it plans; tools don't execute). */
   planMode?: boolean;
+  /** Which agent runtime governs the session (default "claude"). */
+  agentSdk?: AgentProvider;
+  /** Optional per-session model override. */
+  agentModel?: string | null;
+  /** Git commit captured at session start (base for the review diff). */
+  baseRef?: string | null;
+  /** Run the reviewer automatically when the agent finishes. */
+  autoReview?: boolean;
 }
 
 /** An event before the store assigns id/seq/ts. */
@@ -40,6 +49,8 @@ export interface Storage {
   getClaudeSessionId(id: string): string | null;
   /** Whether the session was started in plan mode (preserved across resume). */
   getPlanMode(id: string): boolean;
+  /** Toggle auto-review-on-completion for a session. */
+  setAutoReview(id: string, enabled: boolean): void;
 
   /** Appends an event, assigning id/seq/ts, and returns the stored row. */
   appendEvent(event: NewEvent): JigEvent;

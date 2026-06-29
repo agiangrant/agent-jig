@@ -19,6 +19,10 @@ export type GateState = z.infer<typeof GateState>;
 export const SessionStatus = z.enum(["running", "paused", "done", "error"]);
 export type SessionStatus = z.infer<typeof SessionStatus>;
 
+/** Which coding-agent CLI/SDK governs the session. */
+export const AgentProvider = z.enum(["claude", "gemini", "codex"]);
+export type AgentProvider = z.infer<typeof AgentProvider>;
+
 export const Session = z.object({
   id: z.string(),
   repoPath: z.string(),
@@ -26,10 +30,35 @@ export const Session = z.object({
   /** A short generated title for the prompt; null until generated. */
   title: z.string().nullable().default(null),
   status: SessionStatus,
+  /** The agent runtime governing this session. */
+  agentSdk: AgentProvider.default("claude"),
+  /** Optional per-session model override; null = the provider's default. */
+  agentModel: z.string().nullable().default(null),
+  /** Git commit captured at session start; the base for the PR-format review diff. */
+  baseRef: z.string().nullable().default(null),
+  /** Run the reviewer automatically when the agent finishes (default off). */
+  autoReview: z.boolean().default(false),
   startedAt: z.number().int(),
   endedAt: z.number().int().nullable(),
 });
 export type Session = z.infer<typeof Session>;
+
+/** One provider's readiness, surfaced to the New Session UI. */
+export const ProviderStatus = z.object({
+  id: AgentProvider,
+  label: z.string(),
+  /** True when the server has credentials (or built-in auth) for this provider. */
+  available: z.boolean(),
+  /** Suggested model ids for the picker (the field still accepts a custom value). */
+  models: z.array(z.string()).default([]),
+});
+export type ProviderStatus = z.infer<typeof ProviderStatus>;
+
+export const ProvidersInfo = z.object({
+  providers: z.array(ProviderStatus),
+  default: AgentProvider,
+});
+export type ProvidersInfo = z.infer<typeof ProvidersInfo>;
 
 /** A session plus ephemeral "needs the human" state, for the tab list. */
 export const SessionSummary = Session.extend({
@@ -56,6 +85,7 @@ export const EventType = z.enum([
   "reasoning", // captured agent "why" from the message stream (raw; feeds narration)
   "narration", // Phase 2: curated/generated why annotation
   "directive", // Phase 3
+  "review_comment", // a PR-review comment (human or AI); reduced by payload id
   "session_end",
 ]);
 export type EventType = z.infer<typeof EventType>;
@@ -305,6 +335,102 @@ export const LspServerInfo = z.object({
 });
 export type LspServerInfo = z.infer<typeof LspServerInfo>;
 
+/**
+ * A human comment anchored to one line of a specific edit's diff. The first
+ * slice of @mentions: the developer marks up the diff, accumulates several of
+ * these across edits, and ships them with one steering directive. Anchored by
+ * `editId` (not free-text) so it stays distinct from the inline `@file` mentions
+ * a later slice will parse from the conversation box.
+ */
+export const LineComment = z.object({
+  /** Client-generated id, for removal from the pending tray. */
+  id: z.string(),
+  /** The tool_call's editId this comment is anchored to. */
+  editId: z.string(),
+  /** Repo-relative file path (for display + the composed message). */
+  path: z.string(),
+  /** Which side of the diff the line lives on (old = deleted, new = added/context). */
+  side: z.enum(["old", "new"]),
+  /** 1-based file line number on that side. */
+  line: z.number().int(),
+  /** The line's text content (shown in the chip + given to the agent for context). */
+  lineText: z.string(),
+  /** The developer's comment. */
+  body: z.string(),
+});
+export type LineComment = z.infer<typeof LineComment>;
+
+// --- Code review (PR-format, post-completion) ---
+
+/** Who authored a review comment: the human, or one of the agent providers. */
+export const ReviewAuthor = z.union([z.literal("human"), AgentProvider]);
+export type ReviewAuthor = z.infer<typeof ReviewAuthor>;
+
+/**
+ * One comment on the PR-format review diff (human or AI). Stored as a
+ * `review_comment` event; add/resolve/delete re-append with the same `id`, and
+ * consumers reduce by `id` taking the latest (append-only, like the log).
+ */
+export const ReviewComment = z.object({
+  id: z.string(),
+  author: ReviewAuthor,
+  /** Model that produced an AI comment (null for human). */
+  model: z.string().nullable().default(null),
+  path: z.string(),
+  /** Which side of the diff the line is on (new = added/context, old = removed). */
+  side: z.enum(["old", "new"]),
+  /** 1-based line number on that side of the final diff. */
+  line: z.number().int(),
+  lineText: z.string().default(""),
+  body: z.string(),
+  severity: z.enum(["info", "warning", "issue"]).default("info"),
+  resolved: z.boolean().default(false),
+  deleted: z.boolean().default(false),
+  createdAt: z.number().int(),
+});
+export type ReviewComment = z.infer<typeof ReviewComment>;
+
+/** One row of a unified review diff, carrying both sides' line numbers. */
+export const ReviewDiffRow = z.object({
+  kind: z.enum(["context", "add", "del"]),
+  text: z.string(),
+  oldLine: z.number().int().nullable(),
+  newLine: z.number().int().nullable(),
+});
+export type ReviewDiffRow = z.infer<typeof ReviewDiffRow>;
+
+export const ReviewHunk = z.object({
+  header: z.string(),
+  rows: z.array(ReviewDiffRow),
+});
+export type ReviewHunk = z.infer<typeof ReviewHunk>;
+
+/** A single file's net change in the review, derived from git. */
+export const ReviewFileDiff = z.object({
+  path: z.string(),
+  oldPath: z.string().nullable().default(null),
+  status: z.enum(["added", "modified", "deleted", "renamed"]),
+  hunks: z.array(ReviewHunk),
+});
+export type ReviewFileDiff = z.infer<typeof ReviewFileDiff>;
+
+/** Lifecycle of an AI review run. */
+export const ReviewStatus = z.enum(["idle", "running", "done", "error"]);
+export type ReviewStatus = z.infer<typeof ReviewStatus>;
+
+// --- Skills ---
+
+/** A skill (a SKILL.md) discovered in the repo or the user's home. */
+export const Skill = z.object({
+  name: z.string(),
+  description: z.string().default(""),
+  scope: z.enum(["repo", "user"]),
+  /** Absolute path to the SKILL.md, for display/editing. */
+  path: z.string(),
+  body: z.string().default(""),
+});
+export type Skill = z.infer<typeof Skill>;
+
 export const ServerToClient = z.discriminatedUnion("type", [
   z.object({ type: z.literal("session_state"), session: Session }),
   z.object({ type: z.literal("event"), event: JigEvent }),
@@ -324,6 +450,26 @@ export const ServerToClient = z.discriminatedUnion("type", [
   // Cross-session: the whole tab list with attention state, pushed live so tabs
   // (incl. inactive ones) update without waiting for the poll.
   z.object({ type: z.literal("sessions_summary"), sessions: z.array(SessionSummary) }),
+  // The PR-format net diff (first edit → last) for the review panel.
+  z.object({ type: z.literal("review_diff"), base: z.string(), files: z.array(ReviewFileDiff) }),
+  // The reviewer agent's run state.
+  z.object({
+    type: z.literal("review_status"),
+    status: ReviewStatus,
+    provider: AgentProvider.nullable().default(null),
+    model: z.string().nullable().default(null),
+    error: z.string().nullable().default(null),
+  }),
+  // Repo-relative file paths for @file mention autocomplete in the composer.
+  z.object({ type: z.literal("files_list"), files: z.array(z.string()) }),
+  // The discovered skills (repo + user), for the browser and /skill autocomplete.
+  z.object({ type: z.literal("skills_list"), skills: z.array(Skill) }),
+  // A model-generated SKILL.md draft for the skill creator.
+  z.object({
+    type: z.literal("skill_draft"),
+    body: z.string(),
+    error: z.string().nullable().default(null),
+  }),
 ]);
 export type ServerToClient = z.infer<typeof ServerToClient>;
 
@@ -335,10 +481,61 @@ export const ClientToServer = z.discriminatedUnion("type", [
     type: z.literal("send_directive"),
     text: z.string(),
     anchorEditId: z.string().nullable().default(null),
+    /** Line comments anchored to edits, shipped with this directive (Phase 1 @mentions). */
+    lineComments: z.array(LineComment).default([]),
   }),
   /** Cleanly halt the agent; the session pauses and can be resumed by steering. */
   z.object({ type: z.literal("stop_session") }),
-  z.object({ type: z.literal("sidecar_message"), text: z.string() }),
+  z.object({
+    type: z.literal("sidecar_message"),
+    text: z.string(),
+    /** Optional one-off second-opinion model (defaults to the session's sidecar). */
+    provider: AgentProvider.nullable().default(null),
+    model: z.string().nullable().default(null),
+  }),
+  /** Ask the server to (re)compute the PR-format review diff. */
+  z.object({ type: z.literal("request_review_diff") }),
+  /** Run the reviewer agent; null provider/model = the configured default. */
+  z.object({
+    type: z.literal("request_review"),
+    provider: AgentProvider.nullable().default(null),
+    model: z.string().nullable().default(null),
+  }),
+  /** Add a human inline review comment. */
+  z.object({
+    type: z.literal("add_review_comment"),
+    path: z.string(),
+    side: z.enum(["old", "new"]),
+    line: z.number().int(),
+    lineText: z.string().default(""),
+    body: z.string(),
+  }),
+  /** Mark a review comment resolved/unresolved. */
+  z.object({ type: z.literal("resolve_review_comment"), id: z.string(), resolved: z.boolean() }),
+  /** Remove a review comment (tombstone). */
+  z.object({ type: z.literal("delete_review_comment"), id: z.string() }),
+  /** Send all unresolved review comments back to the coding agent as fixes. */
+  z.object({ type: z.literal("submit_review"), text: z.string().default("") }),
+  /** Toggle auto-review-on-completion for this session. */
+  z.object({ type: z.literal("set_auto_review"), enabled: z.boolean() }),
+  /** Ask for the repo file list (for @file mention autocomplete). */
+  z.object({ type: z.literal("request_files") }),
+  /** Ask for the discovered skills (repo + user). */
+  z.object({ type: z.literal("request_skills") }),
+  /** Create/overwrite a SKILL.md in the repo or user scope. */
+  z.object({
+    type: z.literal("save_skill"),
+    scope: z.enum(["repo", "user"]),
+    name: z.string(),
+    body: z.string(),
+  }),
+  /** Generate a SKILL.md draft from a prompt via the chosen (or default) model. */
+  z.object({
+    type: z.literal("draft_skill"),
+    prompt: z.string(),
+    provider: AgentProvider.nullable().default(null),
+    model: z.string().nullable().default(null),
+  }),
   /** Ask the server for the dependency impact map of a focused file (repo-relative path). */
   z.object({ type: z.literal("request_impact"), path: z.string() }),
   /** Ask for the language-server registry + install state (e.g. when Settings opens). */

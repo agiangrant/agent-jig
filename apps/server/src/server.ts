@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import type { RunSessionDeps } from "@agent-jig/agent-host";
+import type { ClaudeAdapterDeps } from "@agent-jig/agent-host";
 import { ClientToServer, type DialMode, type Session, SessionConfig } from "@agent-jig/contracts";
 import { createNarrator } from "@agent-jig/narrator";
 import { SqliteStorage } from "@agent-jig/store";
@@ -13,6 +13,7 @@ import { StructuralAnalyzer } from "@agent-jig/structural";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { WebSocketServer } from "ws";
+import { loadAgentConfig } from "./config.ts";
 import { type CreateInput, SessionManager } from "./manager.ts";
 import { serveWeb } from "./static.ts";
 
@@ -48,7 +49,7 @@ export interface ServerOptions {
   /** Generate per-edit "why" narration (Haiku). Default on; off via JIG_NARRATE=0. */
   narrate?: boolean;
   /** Injectable SDK `query` for tests; used for every session. */
-  queryImpl?: RunSessionDeps["queryImpl"];
+  queryImpl?: ClaudeAdapterDeps["queryImpl"];
   /** Injectable native folder picker (tests stub it). Returns an abs path or null. */
   pickFolder?: () => Promise<string | null>;
   /** Optionally create one session at boot (the `jig run` single-shot path). */
@@ -108,7 +109,14 @@ export async function startJigServer(opts: ServerOptions): Promise<RunningServer
     (opts.narrate ?? !["0", "off", "false"].includes(process.env.JIG_NARRATE ?? "")) && hasLlm;
   const narrator = narrationOn ? createNarrator() : null;
 
-  const manager = new SessionManager({ store, analyzer, narrator, queryImpl: opts.queryImpl });
+  const agentConfig = loadAgentConfig();
+  const manager = new SessionManager({
+    store,
+    analyzer,
+    narrator,
+    queryImpl: opts.queryImpl,
+    adapterConfig: agentConfig.adapterConfig,
+  });
   // Bring back sessions persisted from a previous run (e.g. a dev-server restart).
   manager.restore();
   if (opts.repoPath && opts.prompt) {
@@ -152,6 +160,11 @@ export async function startJigServer(opts: ServerOptions): Promise<RunningServer
     return c.json(parsed.data);
   });
 
+  // Which agent providers this server can run (the UI disables the rest) + default.
+  app.get("/providers", (c) =>
+    c.json({ providers: agentConfig.statuses, default: agentConfig.defaultProvider }),
+  );
+
   app.get("/sessions", (c) => c.json(manager.list()));
   app.post("/sessions", async (c) => {
     const body = (await c.req.json().catch(() => ({}))) as Partial<CreateInput>;
@@ -166,6 +179,9 @@ export async function startJigServer(opts: ServerOptions): Promise<RunningServer
           mode: body.mode,
           worktree: body.worktree,
           planMode: body.planMode,
+          agentSdk: body.agentSdk,
+          agentModel: body.agentModel,
+          autoReview: body.autoReview,
         }),
       );
     } catch (e) {

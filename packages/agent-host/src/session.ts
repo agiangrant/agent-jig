@@ -2,10 +2,9 @@ import type { JigEvent, Session } from "@agent-jig/contracts";
 import type { Pacer } from "@agent-jig/core";
 import type { Storage } from "@agent-jig/store";
 import type { Worktree } from "@agent-jig/worktree";
-import type { Options } from "@anthropic-ai/claude-agent-sdk";
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import { makeCanUseTool } from "./gate.ts";
-import { InputStream } from "./input-stream.ts";
+import type { AgentSDK } from "./agent-sdk.ts";
+import { claudeAdapter } from "./claude-adapter.ts";
+import { makeGate } from "./gate.ts";
 import { ProvenanceTracker } from "./provenance.ts";
 
 export interface RunSessionDeps {
@@ -14,10 +13,10 @@ export interface RunSessionDeps {
   pacer: Pacer;
   store: Storage;
   onEvent?: (event: JigEvent) => void;
-  /** Extra SDK options merged over the defaults (model, allowedTools, ...). */
-  options?: Partial<Options>;
-  /** Injectable for tests; defaults to the real SDK `query`. */
-  queryImpl?: typeof query;
+  /** Extra provider-specific options merged over the defaults (model, allowedTools, ...). */
+  options?: Record<string, unknown>;
+  /** The agent runtime; defaults to a real Claude adapter. Injectable for tests. */
+  sdk?: AgentSDK;
   /** When set, flags working-tree changes the agent's gated tools didn't make. */
   worktree?: Worktree;
   /** Presents an agent `AskUserQuestion` to the human; resolves to the answer text. */
@@ -75,7 +74,7 @@ export interface RunningSession {
 export function runJigSession(deps: RunSessionDeps): RunningSession {
   const { session, store, onEvent } = deps;
   const tracker = deps.worktree ? new ProvenanceTracker(deps.worktree) : undefined;
-  const canUseTool = makeCanUseTool({
+  const gate = makeGate({
     sessionId: session.id,
     pacer: deps.pacer,
     store,
@@ -86,29 +85,20 @@ export function runJigSession(deps: RunSessionDeps): RunningSession {
     cwd: session.repoPath,
   });
 
-  const input = new InputStream();
-  // The caller owns the first message: the task prompt for a fresh run, a
-  // continue-nudge when resuming on restart, or the user's new instruction when
-  // resuming on demand. (Streaming input acts on turns, so the first push is the
-  // opening turn.)
-  input.push(deps.prompt);
   // The first turn is one turn; each injected directive adds another. End the
   // input stream only once every expected turn has produced its `result`, so we
   // never close it out from under the agent while it's acting on a directive.
   let expectedResults = 1;
 
-  const runner = (deps.queryImpl ?? query)({
-    prompt: input,
-    options: {
-      cwd: session.repoPath,
-      permissionMode: deps.planMode ? "plan" : "default",
-      canUseTool,
-      // Keep Claude Code's default system prompt and append Jig's backpressure
-      // guidance (keep writes in the gated tools; surface shell-writes first).
-      systemPrompt: { type: "preset", preset: "claude_code", append: JIG_SYSTEM_PROMPT },
-      ...(deps.resume ? { resume: deps.resume } : {}),
-      ...deps.options,
-    },
+  const sdk = deps.sdk ?? claudeAdapter();
+  const run = sdk.run({
+    prompt: deps.prompt,
+    cwd: session.repoPath,
+    gate,
+    planMode: deps.planMode,
+    appendSystemPrompt: JIG_SYSTEM_PROMPT,
+    resume: deps.resume,
+    providerOptions: deps.options,
   });
 
   const start = store.appendEvent({
@@ -118,35 +108,24 @@ export function runJigSession(deps: RunSessionDeps): RunningSession {
   });
   onEvent?.(start);
 
-  let sessionIdSeen = false;
-
   const result = (async () => {
     try {
-      for await (const message of runner) {
-        // Capture the SDK session id once so the session can be resumed later.
-        if (!sessionIdSeen) {
-          const sid = (message as { session_id?: string }).session_id;
-          if (sid) {
-            sessionIdSeen = true;
-            deps.onSessionId?.(sid);
-          }
-        }
-        if (message.type === "assistant") {
-          // Capture the agent's reasoning — the raw "why" that feeds narration.
-          for (const block of message.message.content) {
-            if (block.type === "text" && block.text.trim().length > 0) {
-              const event = store.appendEvent({
-                sessionId: session.id,
-                type: "reasoning",
-                payload: { text: block.text },
-              });
-              onEvent?.(event);
-            }
-          }
+      for await (const message of run) {
+        if (message.type === "session") {
+          // The provider's resumable session id — persist it for later resume.
+          deps.onSessionId?.(message.sessionId);
+        } else if (message.type === "reasoning") {
+          // The agent's reasoning — the raw "why" that feeds narration.
+          const event = store.appendEvent({
+            sessionId: session.id,
+            type: "reasoning",
+            payload: { text: message.text },
+          });
+          onEvent?.(event);
         } else if (message.type === "result") {
-          store.appendEvent({ sessionId: session.id, type: "tool_result", payload: message });
+          store.appendEvent({ sessionId: session.id, type: "tool_result", payload: message.raw });
           expectedResults -= 1;
-          if (expectedResults <= 0) input.end();
+          if (expectedResults <= 0) run.end();
         }
       }
       const oob = tracker?.finalize();
@@ -172,14 +151,13 @@ export function runJigSession(deps: RunSessionDeps): RunningSession {
     result,
     sendDirective: (text: string) => {
       expectedResults += 1;
-      input.push(text);
+      run.send(text);
     },
     setPermissionMode: async (mode: string) => {
-      await runner.setPermissionMode(mode as Parameters<typeof runner.setPermissionMode>[0]);
+      await run.setPermissionMode?.(mode);
     },
     interrupt: async () => {
-      input.end();
-      await runner.interrupt();
+      await run.interrupt();
     },
   };
 }

@@ -1,17 +1,19 @@
 import { resolve } from "node:path";
-import type { RunSessionDeps } from "@agent-jig/agent-host";
-import type { DialMode, Session, SessionSummary } from "@agent-jig/contracts";
+import type { AdapterConfig, ClaudeAdapterDeps } from "@agent-jig/agent-host";
+import type { AgentProvider, DialMode, Session, SessionSummary } from "@agent-jig/contracts";
 import type { Narrator } from "@agent-jig/narrator";
 import type { Storage } from "@agent-jig/store";
 import type { StructuralAnalyzer } from "@agent-jig/structural";
-import { createWorktree } from "@agent-jig/worktree";
+import { createWorktree, headRef } from "@agent-jig/worktree";
 import { JigSession } from "./jig-session.ts";
 
 export interface ManagerDeps {
   store: Storage;
   analyzer: StructuralAnalyzer | null;
   narrator: Narrator | null;
-  queryImpl?: RunSessionDeps["queryImpl"];
+  queryImpl?: ClaudeAdapterDeps["queryImpl"];
+  /** Per-provider adapter credentials (gemini/codex API keys), from server config. */
+  adapterConfig?: AdapterConfig;
 }
 
 export interface CreateInput {
@@ -22,6 +24,12 @@ export interface CreateInput {
   worktree?: boolean;
   /** Start the agent in plan mode (plans; tools don't execute). */
   planMode?: boolean;
+  /** Which agent runtime governs the session (default "claude"). */
+  agentSdk?: AgentProvider;
+  /** Optional per-session model override. */
+  agentModel?: string | null;
+  /** Run the reviewer automatically when the agent finishes. */
+  autoReview?: boolean;
 }
 
 /** Only auto-resume sessions whose last activity is this recent (else view-only). */
@@ -50,8 +58,13 @@ export class SessionManager {
     const claudeId = this.deps.store.getClaudeSessionId(session.id);
     const events = this.deps.store.listEvents(session.id);
     const lastTs = events.at(-1)?.ts ?? session.startedAt;
+    // Only Claude resumes its live agent cross-process today; gemini/codex come
+    // back detached (their CLIs don't reliably resume a session by id yet).
     const resumable =
-      session.status === "running" && claudeId !== null && now - lastTs <= RESUME_WINDOW_MS;
+      session.status === "running" &&
+      session.agentSdk === "claude" &&
+      claudeId !== null &&
+      now - lastTs <= RESUME_WINDOW_MS;
 
     if (resumable) {
       try {
@@ -61,6 +74,7 @@ export class SessionManager {
           analyzer: this.deps.analyzer,
           narrator: this.deps.narrator,
           queryImpl: this.deps.queryImpl,
+          adapterConfig: this.deps.adapterConfig,
           resumeClaudeId: claudeId ?? undefined,
           planMode: this.deps.store.getPlanMode(session.id),
           onAttention: () => this.broadcastSummary(),
@@ -80,6 +94,7 @@ export class SessionManager {
         analyzer: this.deps.analyzer,
         narrator: this.deps.narrator,
         queryImpl: this.deps.queryImpl,
+        adapterConfig: this.deps.adapterConfig,
         detached: true,
         onAttention: () => this.broadcastSummary(),
       });
@@ -98,6 +113,11 @@ export class SessionManager {
       repoPath,
       taskPrompt: input.prompt,
       planMode: input.planMode,
+      agentSdk: input.agentSdk,
+      agentModel: input.agentModel,
+      // The PR-format review diffs against this commit (the worktree is off HEAD).
+      baseRef: headRef(repoPath),
+      autoReview: input.autoReview,
     });
     const gs = new JigSession({
       session,
@@ -106,6 +126,7 @@ export class SessionManager {
       analyzer: this.deps.analyzer,
       narrator: this.deps.narrator,
       queryImpl: this.deps.queryImpl,
+      adapterConfig: this.deps.adapterConfig,
       planMode: input.planMode,
       onAttention: () => this.broadcastSummary(),
     });

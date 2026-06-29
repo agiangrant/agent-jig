@@ -1,7 +1,18 @@
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
-import { type RunningSession, type RunSessionDeps, runJigSession } from "@agent-jig/agent-host";
+import {
+  type AdapterConfig,
+  buildReviewPrompt,
+  type ClaudeAdapterDeps,
+  getSDKAdapter,
+  parseReviewComments,
+  REVIEWER_SYSTEM,
+  type RunningSession,
+  runJigSession,
+  runReadOnly,
+} from "@agent-jig/agent-host";
 import {
   buildImpactMap,
   type CodeGraphProvider,
@@ -12,27 +23,39 @@ import {
   type SymbolRef,
 } from "@agent-jig/codegraph";
 import type {
+  AgentProvider,
   ChangeView,
   ClientToServer,
   DialMode,
   FileSlice,
   ImpactMap,
   JigEvent,
+  LineComment,
   PendingPlan,
   PendingQuestion,
   Question,
+  ReviewComment,
   Session,
   SessionSummary,
 } from "@agent-jig/contracts";
-import { groupByIntent, isWriteClass, Pacer } from "@agent-jig/core";
+import {
+  composeAllComments,
+  composeEditFeedback,
+  composeReviewFeedback,
+  groupByIntent,
+  groupCommentsByEdit,
+  isWriteClass,
+  Pacer,
+} from "@agent-jig/core";
 import type { Narrator } from "@agent-jig/narrator";
-import { Sidecar } from "@agent-jig/sidecar";
+import { SIDECAR_SYSTEM, Sidecar } from "@agent-jig/sidecar";
 import type { Storage } from "@agent-jig/store";
 import type { StructuralAnalyzer } from "@agent-jig/structural";
 import { Worktree } from "@agent-jig/worktree";
 import type { WebSocket } from "ws";
 import { Broadcaster } from "./broadcaster.ts";
 import { buildChangeView, visibleEvents } from "./changeView.ts";
+import { listSkills, SKILL_AUTHOR_SYSTEM, saveSkill } from "./skills.ts";
 
 export interface JigSessionDeps {
   session: Session;
@@ -40,7 +63,9 @@ export interface JigSessionDeps {
   store: Storage;
   analyzer: StructuralAnalyzer | null;
   narrator: Narrator | null;
-  queryImpl?: RunSessionDeps["queryImpl"];
+  queryImpl?: ClaudeAdapterDeps["queryImpl"];
+  /** Per-provider adapter credentials (gemini/codex API keys), from server config. */
+  adapterConfig?: AdapterConfig;
   /** Resume a prior SDK session (cross-process) instead of starting the agent fresh. */
   resumeClaudeId?: string;
   /** View-only rehydration: reconnect to stored state without running an agent. */
@@ -91,8 +116,9 @@ export class JigSession {
   readonly id: string;
   private readonly repoPath: string;
   private readonly store: Storage;
-  private readonly session: Session;
-  private readonly queryImpl: RunSessionDeps["queryImpl"];
+  private session: Session;
+  private readonly queryImpl: ClaudeAdapterDeps["queryImpl"];
+  private readonly adapterConfig: AdapterConfig;
   private readonly analyzer: StructuralAnalyzer | null;
   private readonly pacer: Pacer;
   private readonly broadcaster = new Broadcaster();
@@ -128,6 +154,7 @@ export class JigSession {
     this.store = deps.store;
     this.session = deps.session;
     this.queryImpl = deps.queryImpl;
+    this.adapterConfig = deps.adapterConfig ?? {};
     this.analyzer = deps.analyzer;
     this.narrator = deps.narrator;
     this.onAttention = deps.onAttention;
@@ -180,6 +207,15 @@ export class JigSession {
    * session so the agent continues with full prior context.
    */
   private startRunner(firstMessage: string, resumeId?: string, planMode = false): RunningSession {
+    const provider = this.session.agentSdk;
+    const model = this.session.agentModel ?? undefined;
+    // Merge the test-injected `query` and the per-session model into the
+    // server's base credentials, then resolve the right adapter for the provider.
+    const adapterConfig: AdapterConfig = {
+      claude: { ...this.adapterConfig.claude, queryImpl: this.queryImpl },
+      gemini: { ...this.adapterConfig.gemini, ...(model ? { model } : {}) },
+      codex: { ...this.adapterConfig.codex, ...(model ? { model } : {}) },
+    };
     const running = runJigSession({
       session: this.session,
       prompt: firstMessage,
@@ -187,7 +223,9 @@ export class JigSession {
       store: this.store,
       worktree: new Worktree(this.repoPath),
       onEvent: (event) => this.handleEvent(event),
-      queryImpl: this.queryImpl,
+      sdk: getSDKAdapter(provider, adapterConfig),
+      // Claude takes its model via SDK options; gemini/codex via adapter deps above.
+      options: provider === "claude" && model ? { model } : undefined,
       askQuestion: (input) => this.askHuman(input),
       reviewPlan: (input) => this.reviewPlan(input),
       resume: resumeId,
@@ -210,6 +248,8 @@ export class JigSession {
     }
     this.broadcaster.broadcast({ type: "session_state", session: this.meta() });
     this.onAttention?.();
+    // Auto-review (if enabled) is client-driven on the `done` transition, so it
+    // uses the developer's configured default reviewer (a client setting).
   }
 
   /** Cleanly halt the agent; the session becomes `paused` and stays resumable. */
@@ -368,14 +408,186 @@ export class JigSession {
     if (msg.type === "set_dial") this.pacer.setMode(msg.mode);
     else if (msg.type === "ack_edit") this.pacer.ack(msg.editId);
     else if (msg.type === "reject_edit") this.rejectEdit(msg.editId, msg.reason);
-    else if (msg.type === "send_directive") this.sendDirective(msg.text, msg.anchorEditId);
+    else if (msg.type === "send_directive")
+      this.sendDirective(msg.text, msg.anchorEditId, msg.lineComments);
     else if (msg.type === "stop_session") this.stop();
-    else if (msg.type === "sidecar_message") this.askSidecar(msg.text);
+    else if (msg.type === "sidecar_message") this.askSidecar(msg.text, msg.provider, msg.model);
+    else if (msg.type === "request_files") this.broadcastFiles();
+    else if (msg.type === "request_skills") this.broadcastSkills();
+    else if (msg.type === "save_skill") this.handleSaveSkill(msg.scope, msg.name, msg.body);
+    else if (msg.type === "draft_skill") void this.draftSkill(msg.prompt, msg.provider, msg.model);
     else if (msg.type === "answer_question") this.resolveQuestion(msg.questionId, msg.answers);
     else if (msg.type === "decide_plan") this.resolvePlan(msg.planId, msg.approved, msg.reason);
     else if (msg.type === "request_impact") void this.requestImpact(msg.path);
     else if (msg.type === "request_lsp_servers") this.broadcastLspServers();
     else if (msg.type === "install_lsp") void this.installLsp(msg.serverId, msg.path);
+    else if (msg.type === "request_review_diff") this.broadcastReviewDiff();
+    else if (msg.type === "request_review") void this.runReview(msg.provider, msg.model);
+    else if (msg.type === "add_review_comment") this.addReviewComment(msg);
+    else if (msg.type === "resolve_review_comment") this.setReviewResolved(msg.id, msg.resolved);
+    else if (msg.type === "delete_review_comment") this.deleteReviewComment(msg.id);
+    else if (msg.type === "submit_review") this.submitReview(msg.text);
+    else if (msg.type === "set_auto_review") this.setAutoReview(msg.enabled);
+  }
+
+  // --- Code review (PR-format, post-completion) ---
+
+  /** The net change since the session's base commit, as per-file structured diffs. */
+  private reviewDiff() {
+    const base = this.session.baseRef ?? "HEAD";
+    return new Worktree(this.repoPath).diff(base);
+  }
+
+  private broadcastReviewDiff(): void {
+    this.broadcaster.broadcast({
+      type: "review_diff",
+      base: this.session.baseRef ?? "HEAD",
+      files: this.reviewDiff(),
+    });
+  }
+
+  /** Reduce the review_comment event log by comment id → latest, dropping tombstones. */
+  private reviewComments(): ReviewComment[] {
+    const byId = new Map<string, ReviewComment>();
+    for (const e of this.store.listEvents(this.id)) {
+      if (e.type === "review_comment") {
+        const c = e.payload as ReviewComment;
+        byId.set(c.id, c);
+      }
+    }
+    return [...byId.values()].filter((c) => !c.deleted);
+  }
+
+  /** Persist a review comment (add/update/tombstone) and broadcast the event. */
+  private putReviewComment(comment: ReviewComment): void {
+    const event = this.store.appendEvent({
+      sessionId: this.id,
+      type: "review_comment",
+      payload: comment,
+    });
+    this.broadcaster.broadcast({ type: "event", event });
+  }
+
+  private addReviewComment(msg: {
+    path: string;
+    side: "old" | "new";
+    line: number;
+    lineText: string;
+    body: string;
+  }): void {
+    this.putReviewComment({
+      id: randomUUID(),
+      author: "human",
+      model: null,
+      path: msg.path,
+      side: msg.side,
+      line: msg.line,
+      lineText: msg.lineText,
+      body: msg.body,
+      severity: "info",
+      resolved: false,
+      deleted: false,
+      createdAt: Date.now(),
+    });
+  }
+
+  private setReviewResolved(id: string, resolved: boolean): void {
+    const c = this.reviewComments().find((x) => x.id === id);
+    if (c) this.putReviewComment({ ...c, resolved });
+  }
+
+  private deleteReviewComment(id: string): void {
+    const c = this.reviewComments().find((x) => x.id === id);
+    if (c) this.putReviewComment({ ...c, deleted: true });
+  }
+
+  /** Send all unresolved review comments back to the coding agent as fixes. */
+  private submitReview(text: string): void {
+    const open = this.reviewComments().filter((c) => !c.resolved);
+    if (open.length === 0 && !text.trim()) return;
+    const directive = composeReviewFeedback(open, text);
+    if (this.live) this.running.sendDirective(directive);
+    else this.resume(directive);
+    // Mark the submitted comments resolved so a re-review starts clean.
+    for (const c of open) this.putReviewComment({ ...c, resolved: true });
+    const ev = this.store.appendEvent({
+      sessionId: this.id,
+      type: "directive",
+      payload: { text: directive, source: "review" },
+    });
+    this.broadcaster.broadcast({ type: "event", event: ev });
+  }
+
+  private setAutoReview(enabled: boolean): void {
+    this.store.setAutoReview(this.id, enabled);
+    this.session = { ...this.session, autoReview: enabled };
+    this.broadcaster.broadcast({ type: "session_state", session: this.meta() });
+  }
+
+  /** The per-session adapter config (test query + per-provider creds + model). */
+  private adapterConfigFor(model?: string): AdapterConfig {
+    return {
+      claude: { ...this.adapterConfig.claude, queryImpl: this.queryImpl },
+      gemini: { ...this.adapterConfig.gemini, ...(model ? { model } : {}) },
+      codex: { ...this.adapterConfig.codex, ...(model ? { model } : {}) },
+    };
+  }
+
+  /** Run the selected/default reviewer over the PR diff; persist its inline comments. */
+  private async runReview(provider: AgentProvider | null, model: string | null): Promise<void> {
+    const p = provider ?? this.session.agentSdk;
+    const m = model ?? this.session.agentModel ?? undefined;
+    const status = (s: "running" | "done" | "error", error: string | null = null) =>
+      this.broadcaster.broadcast({
+        type: "review_status",
+        status: s,
+        provider: p,
+        model: m ?? null,
+        error,
+      });
+    status("running");
+    try {
+      const files = this.reviewDiff();
+      if (files.length === 0) return status("done");
+      const transcript = buildTranscript(this.store.listEvents(this.id));
+      const prompt = buildReviewPrompt(files, this.session.taskPrompt, transcript);
+      const adapter = getSDKAdapter(p, this.adapterConfigFor(m));
+      const out = await runReadOnly(adapter, {
+        prompt,
+        cwd: this.repoPath,
+        appendSystemPrompt: REVIEWER_SYSTEM,
+      });
+      // Look up each commented line's text from the diff (for the fix directive).
+      const lineText = new Map<string, string>();
+      for (const f of files) {
+        for (const h of f.hunks) {
+          for (const r of h.rows) {
+            const ln = r.newLine;
+            if (ln !== null) lineText.set(`${f.path}:new:${ln}`, r.text);
+            if (r.oldLine !== null) lineText.set(`${f.path}:old:${r.oldLine}`, r.text);
+          }
+        }
+      }
+      for (const c of parseReviewComments(out)) {
+        this.putReviewComment({
+          id: randomUUID(),
+          author: p,
+          model: m ?? null,
+          path: c.path,
+          side: c.side,
+          line: c.line,
+          lineText: lineText.get(`${c.path}:${c.side}:${c.line}`) ?? "",
+          body: c.body,
+          severity: c.severity,
+          resolved: false,
+          deleted: false,
+          createdAt: Date.now(),
+        });
+      }
+      status("done");
+    } catch (e) {
+      status("error", (e as Error).message ?? "review failed");
+    }
   }
 
   /** The language-server registry with this session's install state, for Settings. */
@@ -630,7 +842,39 @@ export class JigSession {
    * mode that is the single edit the agent is blocked on). With nothing pending,
    * the agent is mid-thought: inject the directive for the next tool-call boundary.
    */
-  private sendDirective(text: string, anchorEditId: string | null): void {
+  private sendDirective(
+    text: string,
+    anchorEditId: string | null,
+    lineComments: LineComment[] = [],
+  ): void {
+    // Line comments (Phase 1 @mentions): turn the marked-up diff into feedback
+    // per edit. Each commented edit that's still pending is rejected with its own
+    // aggregated comments (+ the shared message), so the agent revises precisely;
+    // un-commented edits stay queued. With nothing commented pending, ship the
+    // whole annotated batch as one directive (inject if live, else resume).
+    if (lineComments.length > 0) {
+      const groups = groupCommentsByEdit(lineComments);
+      const pendingGroups = groups.filter((g) => this.pacer.isPending(g.editId));
+      const composedFull = composeAllComments(lineComments, text);
+
+      if (pendingGroups.length > 0) {
+        for (const g of pendingGroups) this.pacer.reject(g.editId, composeEditFeedback(g, text));
+      } else if (this.live) {
+        this.running.sendDirective(composedFull);
+      } else {
+        this.resume(composedFull);
+      }
+
+      const event = this.store.appendEvent({
+        sessionId: this.id,
+        type: "directive",
+        editId: anchorEditId,
+        payload: { text: composedFull, lineComments },
+      });
+      this.broadcaster.broadcast({ type: "event", event });
+      return;
+    }
+
     let composed = text;
     if (anchorEditId !== null) {
       const call = this.store
@@ -663,7 +907,11 @@ export class JigSession {
     this.broadcaster.broadcast({ type: "event", event });
   }
 
-  private askSidecar(text: string): void {
+  private askSidecar(
+    text: string,
+    provider: AgentProvider | null = null,
+    model: string | null = null,
+  ): void {
     const events = this.store.listEvents(this.id);
     const transcript = buildTranscript(events);
     const pending = this.pacer.queue
@@ -679,9 +927,75 @@ export class JigSession {
       pending ? `\nEdits in the buffer (not yet applied):\n${pending}` : "",
       `\nDeveloper's question: ${text}`,
     ].join("\n");
-    void this.sidecar
-      .ask(prompt)
-      .then((reply) => this.broadcaster.broadcast({ type: "sidecar_reply", text: reply }));
+    const reply = (text: string) => this.broadcaster.broadcast({ type: "sidecar_reply", text });
+    // A picked provider/model gets a one-shot read-only "second opinion"; the
+    // default keeps using the persistent (fast, stateful) Claude sidecar.
+    if (provider !== null || model !== null) {
+      const adapter = getSDKAdapter(
+        provider ?? this.session.agentSdk,
+        this.adapterConfigFor(model ?? undefined),
+      );
+      void runReadOnly(adapter, { prompt, cwd: this.repoPath, appendSystemPrompt: SIDECAR_SYSTEM })
+        .then(reply)
+        .catch((e) => reply(`(second opinion failed: ${(e as Error).message})`));
+    } else {
+      void this.sidecar.ask(prompt).then(reply);
+    }
+  }
+
+  /** Repo-relative tracked files, for @file mention autocomplete (capped). */
+  private broadcastFiles(): void {
+    let files: string[] = [];
+    try {
+      const out = execFileSync("git", ["-C", this.repoPath, "ls-files", "-z"], {
+        encoding: "utf8",
+        maxBuffer: 32 * 1024 * 1024,
+      });
+      files = out
+        .split("\0")
+        .filter((f) => f.length > 0)
+        .slice(0, 5000);
+    } catch {
+      files = [];
+    }
+    this.broadcaster.broadcast({ type: "files_list", files });
+  }
+
+  // --- Skills ---
+
+  private broadcastSkills(): void {
+    this.broadcaster.broadcast({ type: "skills_list", skills: listSkills(this.repoPath) });
+  }
+
+  private handleSaveSkill(scope: "repo" | "user", name: string, body: string): void {
+    try {
+      saveSkill(this.repoPath, scope, name, body);
+    } catch {
+      // ignore write failures; the list simply won't gain the skill
+    }
+    this.broadcastSkills();
+  }
+
+  /** Generate a SKILL.md draft from a prompt via the chosen/default model. */
+  private async draftSkill(
+    prompt: string,
+    provider: AgentProvider | null,
+    model: string | null,
+  ): Promise<void> {
+    try {
+      const adapter = getSDKAdapter(
+        provider ?? this.session.agentSdk,
+        this.adapterConfigFor(model ?? undefined),
+      );
+      const body = await runReadOnly(adapter, {
+        prompt: `Write a SKILL.md for: ${prompt}`,
+        cwd: this.repoPath,
+        appendSystemPrompt: SKILL_AUTHOR_SYSTEM,
+      });
+      this.broadcaster.broadcast({ type: "skill_draft", body, error: null });
+    } catch (e) {
+      this.broadcaster.broadcast({ type: "skill_draft", body: "", error: (e as Error).message });
+    }
   }
 
   private narrate(narrator: Narrator, event: JigEvent): void {
@@ -725,6 +1039,10 @@ export class JigSession {
       taskPrompt: "",
       title: null,
       status: "running",
+      agentSdk: this.session.agentSdk,
+      agentModel: this.session.agentModel,
+      baseRef: this.session.baseRef,
+      autoReview: this.session.autoReview,
       startedAt: 0,
       endedAt: null,
     };

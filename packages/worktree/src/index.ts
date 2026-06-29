@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
+import type { ReviewDiffRow, ReviewFileDiff, ReviewHunk } from "@agent-jig/contracts";
 
 export interface CreatedWorktree {
   /** Absolute path of the new working tree — the session's repoPath. */
@@ -30,6 +31,74 @@ export function createWorktree(repoPath: string, baseDir?: string): CreatedWorkt
     stdio: "ignore",
   });
   return { path, branch };
+}
+
+/** The current HEAD commit of `repoPath`, captured as a session's review base. */
+export function headRef(repoPath: string): string | null {
+  try {
+    return execFileSync("git", ["-C", repoPath, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse a `git diff --no-color` blob into per-file structured diffs with both
+ * sides' line numbers (for the PR-format review panel + comment anchoring). Pure.
+ */
+export function parseGitDiff(diff: string): ReviewFileDiff[] {
+  const files: ReviewFileDiff[] = [];
+  let file: ReviewFileDiff | null = null;
+  let hunk: ReviewHunk | null = null;
+  let oldLine = 0;
+  let newLine = 0;
+
+  const strip = (p: string) => p.replace(/^[ab]\//, "");
+
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      const m = line.match(/^diff --git a\/(.+) b\/(.+)$/);
+      file = {
+        path: m ? m[2] : "",
+        oldPath: null,
+        status: "modified",
+        hunks: [],
+      } as ReviewFileDiff;
+      files.push(file);
+      hunk = null;
+      continue;
+    }
+    if (!file) continue;
+    if (line.startsWith("new file mode")) file.status = "added";
+    else if (line.startsWith("deleted file mode")) file.status = "deleted";
+    else if (line.startsWith("rename from ")) {
+      file.status = "renamed";
+      file.oldPath = line.slice("rename from ".length).trim();
+    } else if (line.startsWith("rename to ")) {
+      file.path = line.slice("rename to ".length).trim();
+    } else if (line.startsWith("--- ")) {
+      const p = line.slice(4).trim();
+      if (p !== "/dev/null") file.oldPath = file.oldPath ?? strip(p);
+    } else if (line.startsWith("+++ ")) {
+      const p = line.slice(4).trim();
+      if (p !== "/dev/null") file.path = strip(p);
+    } else if (line.startsWith("@@")) {
+      const m = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+      oldLine = m ? Number(m[1]) : 0;
+      newLine = m ? Number(m[2]) : 0;
+      hunk = { header: line, rows: [] };
+      file.hunks.push(hunk);
+    } else if (hunk && (line.startsWith(" ") || line.startsWith("+") || line.startsWith("-"))) {
+      const text = line.slice(1);
+      let row: ReviewDiffRow;
+      if (line.startsWith("+")) row = { kind: "add", text, oldLine: null, newLine: newLine++ };
+      else if (line.startsWith("-")) row = { kind: "del", text, oldLine: oldLine++, newLine: null };
+      else row = { kind: "context", text, oldLine: oldLine++, newLine: newLine++ };
+      hunk.rows.push(row);
+    }
+    // "\ No newline at end of file", "index …", "Binary files …" → ignored.
+  }
+  return files;
 }
 
 /** Map a two-char git porcelain status code to a change kind. */
@@ -99,6 +168,67 @@ export class Worktree {
 
     this.prev = cur;
     return changes;
+  }
+
+  /**
+   * The net change since `base` (a commit) as per-file structured diffs — the
+   * PR-format "first edit → last" view. Tracked changes come from `git diff`;
+   * untracked files are synthesized as whole-file additions.
+   */
+  diff(base: string): ReviewFileDiff[] {
+    if (!this.git) return [];
+    let tracked = "";
+    try {
+      tracked = execFileSync(
+        "git",
+        ["-C", this.repoPath, "diff", "--no-color", "--no-ext-diff", base, "--", "."],
+        { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+      );
+    } catch {
+      tracked = "";
+    }
+    const files = parseGitDiff(tracked);
+    for (const path of this.untracked()) {
+      files.push(this.addedFile(path));
+    }
+    return files.sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  private untracked(): string[] {
+    try {
+      const out = execFileSync(
+        "git",
+        ["-C", this.repoPath, "ls-files", "--others", "--exclude-standard", "-z"],
+        { encoding: "utf8" },
+      );
+      return out.split("\0").filter((p) => p.length > 0);
+    } catch {
+      return [];
+    }
+  }
+
+  /** A new (untracked) file rendered as an all-additions diff. */
+  private addedFile(path: string): ReviewFileDiff {
+    let content = "";
+    try {
+      content = readFileSync(join(this.repoPath, path), "utf8");
+    } catch {
+      return { path, oldPath: null, status: "added", hunks: [] };
+    }
+    const lines = content.split("\n");
+    if (lines.at(-1) === "") lines.pop(); // drop trailing-newline artifact
+    const rows: ReviewDiffRow[] = lines.map((text, i) => ({
+      kind: "add",
+      text,
+      oldLine: null,
+      newLine: i + 1,
+    }));
+    return {
+      path,
+      oldPath: null,
+      status: "added",
+      hunks: [{ header: `@@ -0,0 +1,${rows.length} @@`, rows }],
+    };
   }
 
   private snapshot(): Snapshot {

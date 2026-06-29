@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   title              TEXT,
   claude_session_id  TEXT,
   plan_mode          INTEGER,
+  agent_sdk          TEXT,
+  agent_model        TEXT,
+  base_ref           TEXT,
+  auto_review        INTEGER,
   status             TEXT NOT NULL,
   started_at         INTEGER NOT NULL,
   ended_at           INTEGER
@@ -90,6 +94,10 @@ interface SessionRow {
   repo_path: string;
   task_prompt: string;
   title: string | null;
+  agent_sdk: string | null;
+  agent_model: string | null;
+  base_ref: string | null;
+  auto_review: number | null;
   status: string;
   started_at: number;
   ended_at: number | null;
@@ -118,6 +126,10 @@ function rowToSession(r: SessionRow): Session {
     taskPrompt: r.task_prompt,
     title: r.title,
     status: r.status as SessionStatus,
+    agentSdk: (r.agent_sdk as Session["agentSdk"]) ?? "claude",
+    agentModel: r.agent_model,
+    baseRef: r.base_ref,
+    autoReview: r.auto_review === 1,
     startedAt: r.started_at,
     endedAt: r.ended_at,
   };
@@ -161,6 +173,10 @@ export class SqliteStorage implements Storage {
       this.db.exec("ALTER TABLE sessions ADD COLUMN claude_session_id TEXT");
     }
     if (!has("plan_mode")) this.db.exec("ALTER TABLE sessions ADD COLUMN plan_mode INTEGER");
+    if (!has("agent_sdk")) this.db.exec("ALTER TABLE sessions ADD COLUMN agent_sdk TEXT");
+    if (!has("agent_model")) this.db.exec("ALTER TABLE sessions ADD COLUMN agent_model TEXT");
+    if (!has("base_ref")) this.db.exec("ALTER TABLE sessions ADD COLUMN base_ref TEXT");
+    if (!has("auto_review")) this.db.exec("ALTER TABLE sessions ADD COLUMN auto_review INTEGER");
   }
 
   createSession(input: NewSession): Session {
@@ -170,13 +186,17 @@ export class SqliteStorage implements Storage {
       taskPrompt: input.taskPrompt,
       title: null,
       status: "running",
+      agentSdk: input.agentSdk ?? "claude",
+      agentModel: input.agentModel ?? null,
+      baseRef: input.baseRef ?? null,
+      autoReview: input.autoReview ?? false,
       startedAt: Date.now(),
       endedAt: null,
     };
     this.db
       .prepare(
-        `INSERT INTO sessions (id, repo_path, task_prompt, title, plan_mode, status, started_at, ended_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO sessions (id, repo_path, task_prompt, title, plan_mode, agent_sdk, agent_model, base_ref, auto_review, status, started_at, ended_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         session.id,
@@ -184,11 +204,19 @@ export class SqliteStorage implements Storage {
         session.taskPrompt,
         session.title,
         input.planMode ? 1 : 0,
+        session.agentSdk,
+        session.agentModel,
+        session.baseRef,
+        session.autoReview ? 1 : 0,
         session.status,
         session.startedAt,
         session.endedAt,
       );
     return session;
+  }
+
+  setAutoReview(id: string, enabled: boolean): void {
+    this.db.prepare("UPDATE sessions SET auto_review = ? WHERE id = ?").run(enabled ? 1 : 0, id);
   }
 
   getSession(id: string): Session | null {

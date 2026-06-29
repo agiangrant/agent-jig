@@ -1,7 +1,7 @@
 import { InputStream } from "@agent-jig/agent-host";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
-const SIDECAR_SYSTEM = `You are the Jig sidecar — a read-only assistant beside a developer who is supervising an AI coding agent. The developer asks you about what the agent is doing and why.
+export const SIDECAR_SYSTEM = `You are the Jig sidecar — a read-only assistant beside a developer who is supervising an AI coding agent. The developer asks you about what the agent is doing and why.
 
 You have read-only tools (Read, Grep, Glob) over the working repository, and each question includes a transcript of the agent's recent reasoning and edits.
 
