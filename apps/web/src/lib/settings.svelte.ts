@@ -7,6 +7,7 @@ const AGENT_SDK_KEY = "jig:agentSdk";
 const AGENT_MODELS_KEY = "jig:agentModels";
 const REVIEWER_SDK_KEY = "jig:reviewerSdk";
 const REVIEWER_MODELS_KEY = "jig:reviewerModels";
+const REVIEW_PROMPT_KEY = "jig:reviewPrompt";
 
 /** The coding-agent providers the New Session modal can choose from. */
 export type AgentProvider = "claude" | "gemini" | "codex";
@@ -88,6 +89,9 @@ class Settings {
   /** Default reviewer provider + per-provider model for AI code review. */
   reviewerSdk = $state<AgentProvider>(loadReviewerSdk());
   reviewerModels = $state<Record<AgentProvider, string>>(loadModels(REVIEWER_MODELS_KEY));
+  /** Optional custom review guidance; empty = Jig's default. The post-comments
+   *  protocol is always injected server-side regardless. */
+  reviewPrompt = $state<string>(load(REVIEW_PROMPT_KEY, ""));
 
   apply(): void {
     const r = document.documentElement.style;
@@ -148,6 +152,10 @@ class Settings {
   setReviewerModelFor(provider: AgentProvider, model: string): void {
     this.reviewerModels = { ...this.reviewerModels, [provider]: model };
     persist(REVIEWER_MODELS_KEY, JSON.stringify(this.reviewerModels));
+  }
+  setReviewPrompt(text: string): void {
+    this.reviewPrompt = text;
+    persist(REVIEW_PROMPT_KEY, text);
   }
 }
 

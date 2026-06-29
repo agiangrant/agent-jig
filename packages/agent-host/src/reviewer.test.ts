@@ -1,6 +1,12 @@
 import type { ReviewFileDiff } from "@agent-jig/contracts";
 import { describe, expect, it } from "vitest";
-import { buildReviewPrompt, parseReviewComments } from "./reviewer.ts";
+import {
+  buildReviewPrompt,
+  parseReviewComments,
+  REVIEWER_GUIDANCE,
+  REVIEWER_PROTOCOL,
+  reviewerSystem,
+} from "./reviewer.ts";
 
 describe("parseReviewComments", () => {
   it("parses a bare JSON array", () => {
@@ -32,6 +38,25 @@ describe("parseReviewComments", () => {
     expect(parseReviewComments("no json here")).toEqual([]);
     expect(parseReviewComments("[]")).toEqual([]);
     expect(parseReviewComments("looks good, no issues")).toEqual([]);
+  });
+});
+
+describe("reviewerSystem", () => {
+  it("uses the default guidance when no override is given", () => {
+    const sys = reviewerSystem();
+    expect(sys).toContain(REVIEWER_GUIDANCE);
+    expect(sys).toContain(REVIEWER_PROTOCOL);
+  });
+
+  it("replaces the guidance with the override but always keeps the protocol", () => {
+    const sys = reviewerSystem("Only flag security bugs. Be terse.");
+    expect(sys).toContain("Only flag security bugs. Be terse.");
+    expect(sys).not.toContain(REVIEWER_GUIDANCE);
+    expect(sys).toContain(REVIEWER_PROTOCOL);
+  });
+
+  it("falls back to default for a blank override", () => {
+    expect(reviewerSystem("   ")).toContain(REVIEWER_GUIDANCE);
   });
 });
 

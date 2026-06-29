@@ -370,9 +370,13 @@ export class JigConnection {
   }
 
   /** Run the reviewer agent (null = the configured default provider/model). */
-  requestReview(provider: AgentProvider | null = null, model: string | null = null): void {
+  requestReview(
+    provider: AgentProvider | null = null,
+    model: string | null = null,
+    instructions: string | null = null,
+  ): void {
     this.reviewStatus = { status: "running", provider, model, error: null };
-    this.#send({ type: "request_review", provider, model });
+    this.#send({ type: "request_review", provider, model, instructions });
   }
 
   addReviewComment(c: {

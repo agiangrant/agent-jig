@@ -9,13 +9,24 @@ export interface RawReviewComment {
   body: string;
 }
 
-export const REVIEWER_SYSTEM = `You are a senior code reviewer inside Jig. You are given the net diff of a coding session (first edit to last) and may read the repository with your read-only tools for context. You CANNOT edit files.
+/** The default reviewing guidance — the part a user can override with their own. */
+export const REVIEWER_GUIDANCE = `You are a senior code reviewer inside Jig. You are given the net diff of a coding session (first edit to last) and may read the repository with your read-only tools for context. You CANNOT edit files.
 
-Review the change for correctness bugs, security issues, and clear design/quality problems. Be specific and actionable; skip nitpicks and style unless they cause real harm. Anchor each comment to a concrete line in the diff.
+Review the change for correctness bugs, security issues, and clear design/quality problems. Be specific and actionable; skip nitpicks and style unless they cause real harm. Anchor each comment to a concrete line in the diff.`;
 
-Respond with ONLY a JSON array (no prose, no markdown fences) of comments:
+/**
+ * How to post comments back to Jig — the output contract. Always injected, even
+ * when the user supplies their own guidance, so findings still parse.
+ */
+export const REVIEWER_PROTOCOL = `Respond with ONLY a JSON array (no prose, no markdown fences) of comments:
 [{"path": "<repo-relative path>", "line": <number>, "side": "new" | "old", "severity": "info" | "warning" | "issue", "body": "<the comment>"}]
-Use "new" for added/context lines and "old" for removed lines, with the line number shown in the diff. Return [] if there is nothing worth flagging.`;
+Use "new" for added/context lines and "old" for removed lines, with the line number shown in the diff. Use severity "issue" for must-fix problems and "warning"/"info" for suggestions. Return [] if there is nothing worth flagging.`;
+
+/** Compose the reviewer system prompt: the user's guidance (or the default) + the protocol. */
+export function reviewerSystem(override?: string | null): string {
+  const guidance = override?.trim() ? override.trim() : REVIEWER_GUIDANCE;
+  return `${guidance}\n\n${REVIEWER_PROTOCOL}`;
+}
 
 /** Render the structured diff with per-side line numbers for the reviewer prompt. */
 function renderDiff(files: ReviewFileDiff[]): string {

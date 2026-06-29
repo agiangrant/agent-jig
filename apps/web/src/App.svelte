@@ -47,6 +47,7 @@ const frameless =
 if (frameless) document.documentElement.dataset.frameless = "";
 
 let showSettings = $state(false);
+let settingsTab = $state<"agents" | "review" | "appearance" | "governance" | "tools">("agents");
 let showSkills = $state(false);
 let showTheme = $state(false);
 
@@ -559,7 +560,11 @@ $effect(() => {
   if (s.autoReview && autoReviewedFor !== s.id && conn.reviewStatus.status === "idle") {
     if (!conn.reviewComments.some((c) => c.author !== "human")) {
       autoReviewedFor = s.id;
-      conn.requestReview(settings.reviewerSdk, settings.reviewerModelFor(settings.reviewerSdk) || null);
+      conn.requestReview(
+        settings.reviewerSdk,
+        settings.reviewerModelFor(settings.reviewerSdk) || null,
+        settings.reviewPrompt.trim() || null,
+      );
     }
   }
   if (switchedToChangesFor !== s.id) {
@@ -2153,9 +2158,22 @@ function onGlobalKey(e: KeyboardEvent) {
 {#if showSettings}
   <div class="overlay">
     <button class="backdrop" aria-label="Close" onclick={() => (showSettings = false)}></button>
-    <div class="modal settings" role="dialog" aria-modal="true">
-      <h3>Settings</h3>
+    <div class="modal settings wide" role="dialog" aria-modal="true">
+      <div class="set-head">
+        <h3>Settings</h3>
+        <button type="button" class="set-done" onclick={() => (showSettings = false)}>Done</button>
+      </div>
+      <div class="set-layout">
+        <nav class="set-nav">
+          <button class:on={settingsTab === "agents"} onclick={() => (settingsTab = "agents")}>Agents</button>
+          <button class:on={settingsTab === "review"} onclick={() => (settingsTab = "review")}>Review</button>
+          <button class:on={settingsTab === "appearance"} onclick={() => (settingsTab = "appearance")}>Appearance</button>
+          {#if config}<button class:on={settingsTab === "governance"} onclick={() => (settingsTab = "governance")}>Governance</button>{/if}
+          <button class:on={settingsTab === "tools"} onclick={() => (settingsTab = "tools")}>Tools</button>
+        </nav>
+        <div class="set-pane gv-scroll">
 
+        {#if settingsTab === "agents"}
       <div class="set-row">
         <span class="set-label">Default agent</span>
         <div class="set-control">
@@ -2199,7 +2217,29 @@ function onGlobalKey(e: KeyboardEvent) {
           {/each}
         </p>
       {/if}
+        {/if}
 
+        {#if settingsTab === "review"}
+        <div class="set-row col">
+          <span class="set-label">
+            Custom review instructions
+            <span class="set-hint">optional — replaces Jig's default reviewer guidance; the “post comments back to Jig” protocol is always injected</span>
+          </span>
+          <textarea
+            class="review-prompt"
+            rows="9"
+            placeholder="e.g. Focus on security and error handling. Be terse; only flag real problems."
+            value={settings.reviewPrompt}
+            oninput={(e) => settings.setReviewPrompt(e.currentTarget.value)}
+          ></textarea>
+        </div>
+        <p class="set-hint">
+          The reviewer agent + model are set under
+          <button type="button" class="link-btn" onclick={() => (settingsTab = "agents")}>Agents</button>.
+        </p>
+        {/if}
+
+        {#if settingsTab === "appearance"}
       <div class="set-row">
         <label for="set-theme">Theme</label>
         <div class="set-control">
@@ -2322,8 +2362,9 @@ function onGlobalKey(e: KeyboardEvent) {
           </button>
         {/if}
       </p>
+        {/if}
 
-      {#if config}
+      {#if settingsTab === "governance" && config}
         <h4 class="set-section">Governance <span class="set-hint">— applies to new sessions/runs</span></h4>
 
         <div class="set-row">
@@ -2374,6 +2415,7 @@ function onGlobalKey(e: KeyboardEvent) {
         </div>
       {/if}
 
+        {#if settingsTab === "tools"}
       <div class="set-row col">
         <span class="set-label">Language servers <span class="set-hint">code intelligence for the impact map</span></span>
         <div class="lsp-list">
@@ -2394,9 +2436,9 @@ function onGlobalKey(e: KeyboardEvent) {
           {#if conn.lspServers.length === 0}<p class="set-hint">Loading…</p>{/if}
         </div>
       </div>
+        {/if}
 
-      <div class="modal-actions">
-        <button type="button" class="primary" onclick={() => (showSettings = false)}>Done</button>
+        </div>
       </div>
     </div>
   </div>
@@ -2921,6 +2963,34 @@ function onGlobalKey(e: KeyboardEvent) {
   }
   .rule-x:hover {
     color: var(--danger);
+  }
+  .modal.settings.wide { max-width: 780px; }
+  .set-head { display: flex; align-items: center; justify-content: space-between; }
+  .set-head h3 { margin: 0; }
+  .set-done {
+    background: var(--accent); color: var(--on-accent); border: 0;
+    border-radius: var(--radius-sm); padding: var(--pad-xs) var(--pad);
+    cursor: pointer; font: inherit; font-weight: 600;
+  }
+  .set-layout { display: flex; gap: var(--gap); flex: 1; min-height: 0; margin-top: var(--gap-sm); }
+  .set-nav {
+    flex: none; width: 132px; display: flex; flex-direction: column; gap: 2px;
+    border-right: 1px solid var(--border-soft); padding-right: var(--gap-sm);
+  }
+  .set-nav button {
+    text-align: left; background: none; border: 0; border-radius: var(--radius-sm);
+    padding: var(--pad-xs) var(--pad-sm); cursor: pointer; font: inherit;
+    color: var(--text-2); font-weight: 600;
+  }
+  .set-nav button:hover { background: var(--bg-2); color: var(--fg); }
+  .set-nav button.on { background: var(--bg-3); color: var(--fg); }
+  .set-pane { flex: 1; min-width: 0; overflow-y: auto; padding-right: var(--gap-sm); }
+  .set-pane .set-row:first-child { margin-top: 0; }
+  .review-prompt {
+    width: 100%; box-sizing: border-box; resize: vertical;
+    background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    color: var(--fg); font: inherit; font-family: var(--code-font); font-size: var(--fs-sm);
+    padding: var(--pad-xs) var(--pad-sm);
   }
   .set-row {
     display: grid;

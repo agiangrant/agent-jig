@@ -22,7 +22,7 @@ function pickReviewer(p: AgentProvider, model: string) {
   settings.setReviewerModelFor(p, model);
 }
 function runReview() {
-  conn.requestReview(reviewer, reviewerModel.trim() || null);
+  conn.requestReview(reviewer, reviewerModel.trim() || null, settings.reviewPrompt.trim() || null);
 }
 
 // (Re)compute the PR diff whenever the Changes view mounts.

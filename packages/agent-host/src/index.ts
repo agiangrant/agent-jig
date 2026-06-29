@@ -30,7 +30,9 @@ export {
   buildReviewPrompt,
   parseReviewComments,
   type RawReviewComment,
-  REVIEWER_SYSTEM,
+  REVIEWER_GUIDANCE,
+  REVIEWER_PROTOCOL,
+  reviewerSystem,
 } from "./reviewer.ts";
 export { type RunningSession, type RunSessionDeps, runJigSession } from "./session.ts";
 export {

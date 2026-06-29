@@ -500,6 +500,8 @@ export const ClientToServer = z.discriminatedUnion("type", [
     type: z.literal("request_review"),
     provider: AgentProvider.nullable().default(null),
     model: z.string().nullable().default(null),
+    /** Optional custom review guidance; the post-comments protocol is always injected. */
+    instructions: z.string().nullable().default(null),
   }),
   /** Add a human inline review comment. */
   z.object({

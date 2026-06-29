@@ -8,8 +8,8 @@ import {
   type ClaudeAdapterDeps,
   getSDKAdapter,
   parseReviewComments,
-  REVIEWER_SYSTEM,
   type RunningSession,
+  reviewerSystem,
   runJigSession,
   runReadOnly,
 } from "@agent-jig/agent-host";
@@ -422,7 +422,8 @@ export class JigSession {
     else if (msg.type === "request_lsp_servers") this.broadcastLspServers();
     else if (msg.type === "install_lsp") void this.installLsp(msg.serverId, msg.path);
     else if (msg.type === "request_review_diff") this.broadcastReviewDiff();
-    else if (msg.type === "request_review") void this.runReview(msg.provider, msg.model);
+    else if (msg.type === "request_review")
+      void this.runReview(msg.provider, msg.model, msg.instructions);
     else if (msg.type === "add_review_comment") this.addReviewComment(msg);
     else if (msg.type === "resolve_review_comment") this.setReviewResolved(msg.id, msg.resolved);
     else if (msg.type === "delete_review_comment") this.deleteReviewComment(msg.id);
@@ -534,7 +535,11 @@ export class JigSession {
   }
 
   /** Run the selected/default reviewer over the PR diff; persist its inline comments. */
-  private async runReview(provider: AgentProvider | null, model: string | null): Promise<void> {
+  private async runReview(
+    provider: AgentProvider | null,
+    model: string | null,
+    instructions: string | null = null,
+  ): Promise<void> {
     const p = provider ?? this.session.agentSdk;
     const m = model ?? this.session.agentModel ?? undefined;
     const status = (s: "running" | "done" | "error", error: string | null = null) =>
@@ -555,7 +560,7 @@ export class JigSession {
       const out = await runReadOnly(adapter, {
         prompt,
         cwd: this.repoPath,
-        appendSystemPrompt: REVIEWER_SYSTEM,
+        appendSystemPrompt: reviewerSystem(instructions),
       });
       // Look up each commented line's text from the diff (for the fix directive).
       const lineText = new Map<string, string>();
