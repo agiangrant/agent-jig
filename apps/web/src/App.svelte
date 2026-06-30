@@ -3037,7 +3037,7 @@ function onGlobalKey(e: KeyboardEvent) {
   .set-done {
     background: var(--accent); color: var(--on-accent); border: 0;
     border-radius: var(--radius-sm); padding: var(--pad-xs) var(--pad);
-    cursor: pointer; font: inherit; font-weight: 600;
+    cursor: pointer; font: inherit; font-size: var(--fs-sm); font-weight: 600;
   }
   .set-layout { display: flex; gap: var(--gap); flex: 1; min-height: 0; margin-top: var(--gap-sm); }
   .set-nav {
@@ -3046,7 +3046,7 @@ function onGlobalKey(e: KeyboardEvent) {
   }
   .set-nav button {
     text-align: left; background: none; border: 0; border-radius: var(--radius-sm);
-    padding: var(--pad-xs) var(--pad-sm); cursor: pointer; font: inherit;
+    padding: var(--pad-xs) var(--pad-sm); cursor: pointer; font: inherit; font-size: var(--fs-sm);
     color: var(--text-2); font-weight: 600;
   }
   .set-nav button:hover { background: var(--bg-2); color: var(--fg); }
@@ -4058,6 +4058,7 @@ function onGlobalKey(e: KeyboardEvent) {
     color: var(--fg);
     cursor: pointer;
     font: inherit;
+    font-size: var(--fs-sm);
     padding: var(--pad-xs) var(--pad);
   }
   .plan-changes:disabled {
@@ -4071,6 +4072,7 @@ function onGlobalKey(e: KeyboardEvent) {
     border-radius: var(--radius-sm);
     cursor: pointer;
     font: inherit;
+    font-size: var(--fs-sm);
     font-weight: 600;
     padding: var(--pad-xs) var(--pad);
   }
@@ -4129,6 +4131,7 @@ function onGlobalKey(e: KeyboardEvent) {
     padding: var(--pad-xs) var(--pad-sm);
     cursor: pointer;
     font: inherit;
+    font-size: var(--fs-sm);
     color: var(--fg);
   }
   .opt:hover {
@@ -4172,6 +4175,7 @@ function onGlobalKey(e: KeyboardEvent) {
     padding: var(--pad-xs) var(--pad);
     cursor: pointer;
     font: inherit;
+    font-size: var(--fs-sm);
     font-weight: 600;
   }
   .q-submit:disabled {
@@ -4403,6 +4407,7 @@ function onGlobalKey(e: KeyboardEvent) {
     padding: var(--pad-xs) var(--pad);
     cursor: pointer;
     font: inherit;
+    font-size: var(--fs-sm);
     font-weight: 600;
   }
   .actions-spacer { flex: 1 1 auto; }
@@ -4638,6 +4643,7 @@ function onGlobalKey(e: KeyboardEvent) {
     padding: var(--pad-xs) var(--pad);
     cursor: pointer;
     font: inherit;
+    font-size: var(--fs-sm);
     background: var(--bg-2);
     border: 1px solid var(--border);
     color: var(--fg);

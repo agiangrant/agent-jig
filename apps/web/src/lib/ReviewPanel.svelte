@@ -271,12 +271,12 @@ const summaryTitle = $derived(
   }
   .submit input {
     flex: 1; min-width: 0; background: var(--bg-2); border: 1px solid var(--border);
-    border-radius: var(--radius-sm); color: var(--fg); font: inherit; padding: var(--pad-xs) var(--pad-sm);
+    border-radius: var(--radius-sm); color: var(--fg); font: inherit; font-size: var(--fs-sm); padding: var(--pad-xs) var(--pad-sm);
   }
   .submit .primary {
     flex: none; background: var(--accent); color: var(--on-accent);
     border: 1px solid var(--accent); border-radius: var(--radius-sm);
-    padding: var(--pad-xs) var(--pad); cursor: pointer; font: inherit; font-weight: 700;
+    padding: var(--pad-xs) var(--pad); cursor: pointer; font: inherit; font-size: var(--fs-sm); font-weight: 700;
   }
   .submit .primary:disabled { opacity: 0.5; cursor: default; }
 </style>
