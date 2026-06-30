@@ -545,6 +545,9 @@ const toggle = () => conn.setDial(conn.mode === "slowed" ? "realtime" : "slowed"
 // --- Center workspace tabs (Observe → Understand → Steer, as three views) ---
 let centerTab = $state<"feed" | "changes" | "activity" | "arch">("feed");
 const reviewOpenCount = $derived(conn.reviewComments.filter((c) => !c.resolved).length);
+// Newest-first for the Activity timeline; with the column-reverse scroller this
+// renders oldest→newest top→bottom, pinned to the bottom as events arrive.
+const activityEvents = $derived([...conn.events].reverse());
 const sessionDone = $derived(
   conn.session?.status === "done" || conn.session?.status === "error",
 );
@@ -1749,12 +1752,11 @@ function onGlobalKey(e: KeyboardEvent) {
           {/if}
 
           {#if centerTab === "activity"}
-            <div class="tab-scroll gv-scroll">
-            <ol class="timeline">
+            <ol class="timeline activity-rev gv-scroll">
               {#if conn.events.length === 0}
                 <li class="empty">No activity yet — the agent hasn't acted.</li>
               {/if}
-              {#each conn.events as ev (ev.id)}
+              {#each activityEvents as ev (ev.id)}
                 {#if ev.type === "out_of_band_change"}
                   <li class="tl oob">
                     <span class="tl-dot warn"></span>
@@ -1801,7 +1803,6 @@ function onGlobalKey(e: KeyboardEvent) {
                 {/if}
               {/each}
             </ol>
-            </div>
           {/if}
 
           {#if centerTab === "arch"}
@@ -4682,6 +4683,17 @@ function onGlobalKey(e: KeyboardEvent) {
     border: 1px solid var(--border);
     border-radius: var(--radius);
     padding: var(--pad-xs) var(--pad);
+  }
+  /* Activity: a bottom-anchored log. column-reverse keeps the newest event in
+     view and pins scroll to the bottom; scrolling up holds position as events
+     arrive (the items are rendered newest-first to read oldest→newest). */
+  .timeline.activity-rev {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    flex-direction: column-reverse;
+    margin: 16px 24px;
+    animation: none;
   }
   .tl {
     display: flex;
