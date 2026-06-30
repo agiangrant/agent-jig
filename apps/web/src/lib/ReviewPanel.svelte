@@ -34,6 +34,35 @@ function commentsFor(path: string): ReviewComment[] {
   return conn.reviewComments.filter((c) => c.path === path);
 }
 
+// Master-detail: a file rail navigates; one file's diff renders at a time (so a
+// long session never mounts every diff at once).
+let selected = $state<string | null>(null);
+const selectedFile = $derived(conn.reviewDiff.find((f) => f.path === selected) ?? conn.reviewDiff[0]);
+$effect(() => {
+  // Keep selection valid as the diff list changes; default to the first file.
+  if (conn.reviewDiff.length > 0 && !conn.reviewDiff.some((f) => f.path === selected)) {
+    selected = conn.reviewDiff[0].path;
+  }
+});
+
+const TAG: Record<string, { letter: string; color: string }> = {
+  added: { letter: "A", color: "var(--go)" },
+  modified: { letter: "M", color: "var(--warm)" },
+  deleted: { letter: "D", color: "var(--danger)" },
+  renamed: { letter: "R", color: "var(--accent)" },
+};
+function fileMeta(path: string, status: string) {
+  const cs = conn.reviewComments.filter((c) => c.path === path && !c.resolved);
+  const dot = cs.some((c) => c.severity === "issue")
+    ? "var(--danger)"
+    : cs.some((c) => c.severity === "warning")
+      ? "var(--warm)"
+      : cs.length > 0
+        ? "var(--accent)"
+        : "var(--text-3)";
+  return { count: cs.length, dot, tag: TAG[status] ?? TAG.modified };
+}
+
 const open = $derived(conn.reviewComments.filter((c) => !c.resolved));
 const ai = $derived(open.filter((c) => c.author !== "human"));
 const mustFix = $derived(ai.filter((c) => c.severity === "issue").length);
@@ -96,16 +125,38 @@ const summaryTitle = $derived(
   {#if conn.reviewDiff.length === 0}
     <div class="empty">No changes against the base commit yet.</div>
   {:else}
-    <div class="files gv-scroll">
-      {#each conn.reviewDiff as file (file.path)}
-        <ReviewDiff
-          {file}
-          comments={commentsFor(file.path)}
-          onAdd={(c) => conn.addReviewComment(c)}
-          onResolve={(id, resolved) => conn.resolveReviewComment(id, resolved)}
-          onDismiss={(id) => conn.deleteReviewComment(id)}
-        />
-      {/each}
+    <div class="review-body">
+      <aside class="file-rail">
+        <div class="rail-head">
+          <span>Files</span>
+          <span class="rail-count">{conn.reviewDiff.length} files</span>
+        </div>
+        <div class="rail-list gv-scroll">
+          {#each conn.reviewDiff as f (f.path)}
+            {@const m = fileMeta(f.path, f.status)}
+            <button class="rail-item" class:on={selected === f.path} title={f.path} onclick={() => (selected = f.path)}>
+              <span class="dot" style="background:{m.dot}"></span>
+              <span class="rail-name">{f.path}</span>
+              {#if m.count > 0}<span class="rail-cnt">{m.count}</span>{/if}
+              <span class="rail-tag" style="color:{m.tag.color}">{m.tag.letter}</span>
+            </button>
+          {/each}
+        </div>
+      </aside>
+
+      <div class="file-view">
+        {#if selectedFile}
+          {#key selectedFile.path}
+            <ReviewDiff
+              file={selectedFile}
+              comments={commentsFor(selectedFile.path)}
+              onAdd={(c) => conn.addReviewComment(c)}
+              onResolve={(id, resolved) => conn.resolveReviewComment(id, resolved)}
+              onDismiss={(id) => conn.deleteReviewComment(id)}
+            />
+          {/key}
+        {/if}
+      </div>
     </div>
 
     <div class="submit">
@@ -181,7 +232,39 @@ const summaryTitle = $derived(
   .request:disabled { opacity: 0.6; cursor: default; filter: none; }
 
   .empty { color: var(--text-3); padding: var(--pad); text-align: center; }
-  .files { flex: 1; overflow-y: auto; min-height: 0; padding: var(--pad-sm) var(--pad); }
+
+  .review-body { flex: 1; display: flex; min-height: 0; }
+  .file-rail {
+    width: 272px; flex: none; min-height: 0;
+    display: flex; flex-direction: column;
+    border-right: 1px solid var(--border-soft); background: var(--bg);
+  }
+  .rail-head {
+    flex: none; display: flex; align-items: center; gap: 8px;
+    padding: var(--pad-sm) var(--pad); border-bottom: 1px solid var(--border-soft);
+    font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: 0.07em;
+    color: var(--text-3); font-weight: 700;
+  }
+  .rail-count { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .rail-list { flex: 1; overflow-y: auto; min-height: 0; padding: var(--pad-xs); }
+  .rail-item {
+    width: 100%; text-align: left; display: flex; align-items: center; gap: 8px;
+    border: 1px solid transparent; background: none; border-radius: var(--radius-sm);
+    padding: 7px var(--pad-sm); margin-bottom: 2px; cursor: pointer; font: inherit; color: var(--fg);
+  }
+  .rail-item:hover { background: var(--bg-2); }
+  .rail-item.on { background: var(--bg-3); border-color: var(--border); }
+  .rail-item .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .rail-name {
+    font-family: var(--code-font); font-size: var(--fs-sm); flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left;
+  }
+  .rail-cnt {
+    font-size: 9px; font-weight: 700; color: #fff; background: var(--danger);
+    border-radius: 999px; padding: 1px 6px; flex: none;
+  }
+  .rail-tag { width: 14px; text-align: center; font-size: 10px; font-weight: 700; flex: none; }
+  .file-view { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
   .submit {
     flex: none; display: flex; gap: var(--gap-sm); align-items: center;
     padding: var(--pad-sm) var(--pad); border-top: 1px solid var(--border-soft); background: var(--bg-1);
