@@ -3031,7 +3031,10 @@ function onGlobalKey(e: KeyboardEvent) {
   .rule-x:hover {
     color: var(--danger);
   }
-  .modal.settings.wide { max-width: 780px; }
+  /* Fixed height so switching tabs doesn't resize the frame (Agents is tall,
+     Tools is short) — the nav stays anchored and the pane scrolls inside.
+     Clamped under the base .modal's max-height: 86vh. */
+  .modal.settings.wide { max-width: 780px; height: 80vh; }
   .set-head { display: flex; align-items: center; justify-content: space-between; }
   .set-head h3 { margin: 0; }
   .set-done {
