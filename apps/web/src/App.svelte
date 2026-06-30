@@ -4554,6 +4554,7 @@ function onGlobalKey(e: KeyboardEvent) {
     padding: var(--pad-xs) var(--pad-sm);
     cursor: pointer;
     font: inherit;
+    font-size: var(--fs-sm);
   }
   .modal.dragover {
     border-color: var(--accent);
@@ -4561,6 +4562,8 @@ function onGlobalKey(e: KeyboardEvent) {
   }
   .modal h3 {
     margin: 0 0 var(--gap-sm);
+    font-size: var(--fs-lg);
+    font-weight: 600;
   }
   .modal label {
     font-size: var(--fs-sm);
@@ -4597,6 +4600,7 @@ function onGlobalKey(e: KeyboardEvent) {
     padding: var(--pad-xs) var(--pad-sm);
     color: var(--fg);
     font: inherit;
+    font-size: var(--fs-sm);
     min-width: 0;
   }
   .repo-field button {
@@ -4607,6 +4611,7 @@ function onGlobalKey(e: KeyboardEvent) {
     color: var(--fg);
     cursor: pointer;
     font: inherit;
+    font-size: var(--fs-sm);
     white-space: nowrap;
   }
   .recent {
@@ -4625,6 +4630,8 @@ function onGlobalKey(e: KeyboardEvent) {
     padding: var(--pad-sm) var(--pad-sm);
     color: var(--fg);
     font: inherit;
+    font-size: var(--fs-sm);
+    line-height: 1.5;
     resize: vertical;
   }
   .err {
