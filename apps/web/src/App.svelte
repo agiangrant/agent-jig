@@ -547,7 +547,12 @@ let centerTab = $state<"feed" | "changes" | "activity" | "arch">("feed");
 const reviewOpenCount = $derived(conn.reviewComments.filter((c) => !c.resolved).length);
 // Newest-first for the Activity timeline; with the column-reverse scroller this
 // renders oldest→newest top→bottom, pinned to the bottom as events arrive.
-const activityEvents = $derived([...conn.events].reverse());
+// tool_result/ack are bookkeeping — the tool_call (and its live gateState)
+// already carries that signal, so the timeline omits them to stay readable.
+const ACTIVITY_HIDDEN = new Set(["tool_result", "ack"]);
+const activityEvents = $derived(
+  conn.events.filter((e) => !ACTIVITY_HIDDEN.has(e.type)).reverse(),
+);
 const sessionDone = $derived(
   conn.session?.status === "done" || conn.session?.status === "error",
 );
@@ -682,6 +687,92 @@ function outOfBand(p: unknown): { attributedTo: string; files: { path: string; k
 }
 function text(p: unknown): string {
   return ((p ?? {}) as { text?: string }).text ?? "";
+}
+
+// --- Activity timeline: one event → one descriptor row ---------------------
+// A faithful render of the Governor mockup's timeline: a glyph node on a
+// connector rail, a title · tag · time head, and an optional detail line. The
+// per-type mapping lives here (not in the markup) so the {#each} stays flat.
+const ACTIVITY_READ_TOOLS = new Set(["Read", "Grep", "Glob", "LS", "NotebookRead"]);
+type ActivityRow = {
+  glyph: string;
+  /** Node colour class: ""|start|edit-ok|edit-gated|edit-rejected|accent|warn|reason */
+  node: string;
+  title: string;
+  titleClass: string; // ""|muted|warn|accent
+  body: string;
+  bodyClass: string; // ""|why|mono|cmd
+  tag: string;
+  tagClass: string; // ""|go|warm|accent|danger
+};
+/** Format an event's epoch-ms `ts` as a local HH:MM clock. */
+function fmtClock(ts: number): string {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+function activityToolRow(ev: JigEvent): ActivityRow {
+  const tool = ev.toolName ?? "tool";
+  // Write-class edits carry an editId — they get the gate-state treatment.
+  if (ev.editId) {
+    const why = narrationFor(ev.editId);
+    const base = baseOf(filePath(ev.payload)) || "file";
+    const body = why ? `${base} · ${why}` : base;
+    switch (ev.gateState) {
+      case "pending":
+        return { glyph: "⏸", node: "edit-gated", title: "Edit gated", titleClass: "warn", body, bodyClass: "", tag: "now", tagClass: "warm" };
+      case "rejected":
+        return { glyph: "✕", node: "edit-rejected", title: "Edit rejected", titleClass: "", body, bodyClass: "", tag: "rejected", tagClass: "danger" };
+      case "bypassed":
+        return { glyph: "✓", node: "edit-ok", title: "Edit applied", titleClass: "", body, bodyClass: "", tag: "auto", tagClass: "go" };
+      default:
+        return { glyph: "✓", node: "edit-ok", title: "Edit applied", titleClass: "", body, bodyClass: "", tag: "approved", tagClass: "go" };
+    }
+  }
+  const isBash = tool === "Bash";
+  const isRead = ACTIVITY_READ_TOOLS.has(tool);
+  return {
+    glyph: isBash ? "⌘" : isRead ? "⌕" : "•",
+    node: "",
+    title: tool,
+    titleClass: "",
+    body: toolDetail(ev),
+    bodyClass: isBash ? "cmd" : "mono",
+    tag: isBash ? "run" : isRead ? "read" : "",
+    tagClass: isBash ? "accent" : "",
+  };
+}
+function activityRow(ev: JigEvent): ActivityRow {
+  switch (ev.type) {
+    case "session_start": {
+      const p = (ev.payload ?? {}) as { prompt?: string; resumed?: boolean };
+      const repo = repoName(conn.session?.repoPath ?? "");
+      const task = (p.prompt ?? "").replace(/\s+/g, " ").trim();
+      return {
+        glyph: "▸", node: "start",
+        title: p.resumed ? "Session resumed" : "Session started", titleClass: "",
+        body: [repo, task].filter(Boolean).join(" · "), bodyClass: "",
+        tag: "", tagClass: "",
+      };
+    }
+    case "session_end":
+      return { glyph: "■", node: "", title: "Session ended", titleClass: "muted", body: "", bodyClass: "", tag: "", tagClass: "" };
+    case "reasoning":
+      return { glyph: "", node: "reason", title: "Reasoning", titleClass: "muted", body: text(ev.payload), bodyClass: "why", tag: "", tagClass: "" };
+    case "narration":
+      return { glyph: "✎", node: "reason", title: "Note", titleClass: "muted", body: text(ev.payload), bodyClass: "why", tag: "", tagClass: "" };
+    case "directive":
+      return { glyph: "→", node: "accent", title: "Steer", titleClass: "accent", body: text(ev.payload), bodyClass: "", tag: "", tagClass: "" };
+    case "dial_change": {
+      const mode = ((ev.payload ?? {}) as { mode?: string }).mode ?? "";
+      return { glyph: "◐", node: "", title: "Pace changed", titleClass: "", body: mode === "realtime" ? "Real-time" : "Slowed", bodyClass: "", tag: "", tagClass: "" };
+    }
+    case "out_of_band_change": {
+      const o = outOfBand(ev.payload);
+      return { glyph: "⚠", node: "warn", title: "Changed outside the agent", titleClass: "warn", body: o.files.map((f) => f.path).join(", "), bodyClass: "mono", tag: o.attributedTo, tagClass: "warm" };
+    }
+    default:
+      return activityToolRow(ev);
+  }
 }
 
 // --- Architecture: files touched this session, grouped into a small tree ---
@@ -1753,54 +1844,27 @@ function onGlobalKey(e: KeyboardEvent) {
 
           {#if centerTab === "activity"}
             <ol class="timeline activity-rev gv-scroll">
-              {#if conn.events.length === 0}
+              {#if activityEvents.length === 0}
                 <li class="empty">No activity yet — the agent hasn't acted.</li>
               {/if}
               {#each activityEvents as ev (ev.id)}
-                {#if ev.type === "out_of_band_change"}
-                  <li class="tl oob">
-                    <span class="tl-dot warn"></span>
-                    <div class="tl-body">
-                      <span class="tl-title warn">⚠ changed outside the agent <span class="tl-tag">{outOfBand(ev.payload).attributedTo}</span></span>
-                      <span class="tl-text">{outOfBand(ev.payload).files.map((f) => f.path).join(", ")}</span>
+                {@const r = activityRow(ev)}
+                <li class="tl">
+                  <div class="tl-rail">
+                    <span class="tl-node {r.node}">{r.glyph}</span>
+                    <span class="tl-line"></span>
+                  </div>
+                  <div class="tl-body">
+                    <div class="tl-head">
+                      <span class="tl-title {r.titleClass}">{r.title}</span>
+                      {#if r.tag}<span class="tl-tag {r.tagClass}">{r.tag}</span>{/if}
+                      <span class="tl-time">{fmtClock(ev.ts)}</span>
                     </div>
-                    <span class="seq">#{ev.seq}</span>
-                  </li>
-                {:else if ev.type === "reasoning"}
-                  <li class="tl reason">
-                    <span class="tl-dot"></span>
-                    <div class="tl-body">
-                      <span class="tl-title muted">Reasoning</span>
-                      <span class="tl-text why">{text(ev.payload)}</span>
-                    </div>
-                    <span class="seq">#{ev.seq}</span>
-                  </li>
-                {:else if ev.type === "directive"}
-                  <li class="tl directive">
-                    <span class="tl-dot accent"></span>
-                    <div class="tl-body">
-                      <span class="tl-title accent">→ Steer</span>
-                      <span class="tl-text">{text(ev.payload)}</span>
-                    </div>
-                    <span class="seq">#{ev.seq}</span>
-                  </li>
-                {:else}
-                  {@const detail = ev.type === "tool_call" ? toolDetail(ev) : ""}
-                  <li class="tl">
-                    <span class="tl-dot {ev.gateState ?? ''}"></span>
-                    <div class="tl-body">
-                      <span class="tl-title">
-                        {ev.type}
-                        {#if ev.toolName}<span class="tool">{ev.toolName}</span>{/if}
-                        {#if ev.gateState}<span class="gate {ev.gateState}">{ev.gateState}</span>{/if}
-                      </span>
-                      {#if detail}
-                        <span class="tl-text mono" class:cmd={ev.toolName === "Bash"}>{detail}</span>
-                      {/if}
-                    </div>
-                    <span class="seq">#{ev.seq}</span>
-                  </li>
-                {/if}
+                    {#if r.body}
+                      <span class="tl-text {r.bodyClass}">{r.body}</span>
+                    {/if}
+                  </div>
+                </li>
               {/each}
             </ol>
           {/if}
@@ -4255,28 +4319,6 @@ function onGlobalKey(e: KeyboardEvent) {
     color: var(--danger);
   }
 
-  .tool {
-    color: var(--muted);
-    font-size: var(--fs-sm);
-  }
-
-  .gate {
-    font-size: 10px;
-    text-transform: uppercase;
-  }
-  .gate.pending {
-    color: var(--warn);
-  }
-  .gate.released {
-    color: var(--ok);
-  }
-  .gate.bypassed {
-    color: var(--muted);
-  }
-  .gate.rejected {
-    color: var(--danger);
-  }
-
   .chat {
     flex: 1;
     min-height: 0;
@@ -4674,72 +4716,104 @@ function onGlobalKey(e: KeyboardEvent) {
     font-weight: 600;
   }
 
-  /* --- Activity timeline --- */
-  .timeline {
-    display: flex;
-    flex-direction: column;
-    animation: gv-fade 0.3s ease;
-    background: var(--bg-1);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: var(--pad-xs) var(--pad);
-  }
-  /* Activity: a bottom-anchored log. column-reverse keeps the newest event in
-     view and pins scroll to the bottom; scrolling up holds position as events
-     arrive (the items are rendered newest-first to read oldest→newest). */
+  /* --- Activity timeline ---
+     A vertical timeline: each event is a glyph node sitting on a connector rail,
+     with a title · tag · time head and an optional detail line. Bottom-anchored
+     (column-reverse) so the newest event stays in view; the {#each} renders
+     newest-first in the DOM, but every row lays out node-over-line, so the rail
+     still reads as one continuous thread top→bottom. */
   .timeline.activity-rev {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
+    display: flex;
     flex-direction: column-reverse;
-    margin: 16px 24px;
-    animation: none;
+    margin: 0;
+    padding: var(--pad) 24px var(--pad-sm);
+    list-style: none;
   }
   .tl {
     display: flex;
-    gap: 12px;
-    align-items: flex-start;
-    padding: var(--pad-xs) 0;
+    gap: 14px;
+    align-items: stretch;
   }
-  .tl + .tl {
-    border-top: 1px solid var(--border-soft);
-  }
-  .tl-dot {
-    margin-top: 5px;
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
+  .tl-rail {
     flex: none;
-    background: var(--text-3);
-    box-shadow: 0 0 0 3px var(--bg-2);
+    width: 26px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
   }
-  .tl-dot.warn,
-  .tl-dot.pending {
-    background: var(--warm);
+  .tl-node {
+    width: 26px;
+    height: 26px;
+    flex: none;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: calc(11px * var(--ui-scale));
+    font-weight: 700;
+    line-height: 1;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    color: var(--text-2);
   }
-  .tl-dot.accent {
-    background: var(--accent);
+  .tl-node.start,
+  .tl-node.accent {
+    background: var(--accent-2);
+    border-color: var(--accent-dim);
+    color: var(--accent);
   }
-  .tl-dot.released {
-    background: var(--go);
+  .tl-node.edit-ok {
+    background: var(--go-dim);
+    border-color: var(--go-2);
+    color: var(--go);
   }
-  .tl-dot.rejected {
-    background: var(--danger);
+  .tl-node.edit-gated,
+  .tl-node.warn {
+    background: var(--warm-dim);
+    border-color: var(--warm-2);
+    color: var(--warm);
+  }
+  .tl-node.edit-rejected {
+    background: var(--danger-2);
+    border-color: var(--danger-2);
+    color: var(--danger);
+  }
+  .tl-node.reason {
+    border-color: var(--border-soft);
+    color: var(--text-3);
+  }
+  /* The thread below each node. Under column-reverse the DOM-first row (newest)
+     sits at the visual bottom, so it's the one whose trailing line would dangle
+     into empty space — hide its stub. */
+  .tl-line {
+    flex: 1;
+    width: 1.5px;
+    min-height: 10px;
+    margin-top: 4px;
+    background: var(--border-soft);
+  }
+  .tl:first-child .tl-line {
+    display: none;
   }
   .tl-body {
     flex: 1;
     min-width: 0;
+    padding-bottom: var(--gap);
+  }
+  .tl-head {
     display: flex;
-    flex-direction: column;
-    gap: 2px;
+    align-items: center;
+    gap: 9px;
+    margin-bottom: 2px;
   }
   .tl-title {
     font-size: var(--fs-sm);
     font-weight: 700;
     color: var(--text);
-    display: flex;
-    align-items: center;
-    gap: 8px;
+    letter-spacing: 0.01em;
   }
   .tl-title.muted {
     color: var(--text-3);
@@ -4751,11 +4825,20 @@ function onGlobalKey(e: KeyboardEvent) {
   .tl-title.accent {
     color: var(--accent);
   }
+  .tl-time {
+    margin-left: auto;
+    flex: none;
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    font-family: var(--code-font);
+  }
   .tl-text {
+    display: block;
     font-size: var(--fs-sm);
     color: var(--text-2);
-    line-height: var(--leading);
+    line-height: 1.6;
     white-space: pre-wrap;
+    word-break: break-word;
   }
   .tl-text.why {
     color: var(--accent);
@@ -4766,16 +4849,17 @@ function onGlobalKey(e: KeyboardEvent) {
     font-family: var(--code-font);
     font-size: var(--fs-xs);
     color: var(--text-3);
-    word-break: break-word;
   }
   /* A run Bash command: tinted panel with a leading prompt glyph. */
   .tl-text.cmd {
+    font-family: var(--code-font);
+    font-size: var(--fs-xs);
     color: var(--text-2);
     background: var(--bg-2);
     border: 1px solid var(--border-soft);
     border-radius: var(--radius-sm);
     padding: 4px 8px;
-    margin-top: 2px;
+    margin-top: 3px;
   }
   .tl-text.cmd::before {
     content: "$ ";
@@ -4783,18 +4867,29 @@ function onGlobalKey(e: KeyboardEvent) {
     font-weight: 700;
   }
   .tl-tag {
+    flex: none;
     font-size: var(--fs-xs);
+    font-weight: 600;
     color: var(--text-2);
     background: var(--bg-3);
     border-radius: 5px;
-    padding: 1px 7px;
-    font-weight: 600;
+    padding: 2px 7px;
   }
-  .timeline .seq {
-    flex: none;
-    color: var(--text-3);
-    font-size: var(--fs-xs);
-    font-family: var(--code-font);
+  .tl-tag.go {
+    color: var(--go);
+    background: var(--go-dim);
+  }
+  .tl-tag.warm {
+    color: var(--warm);
+    background: var(--warm-dim);
+  }
+  .tl-tag.accent {
+    color: var(--accent);
+    background: var(--accent-2);
+  }
+  .tl-tag.danger {
+    color: var(--danger);
+    background: var(--danger-2);
   }
 
   /* --- Architecture (touched files + impact map) --- */
