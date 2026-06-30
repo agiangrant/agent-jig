@@ -168,6 +168,10 @@ function onkeydown(e: KeyboardEvent) {
     border: 0;
     color: var(--fg);
     font: inherit;
+    /* Match the component text scale (density + UI-size aware), not the raw
+       body size — otherwise the input reads larger than the rest of the UI. */
+    font-size: var(--fs-sm);
+    line-height: 1.5;
     padding: var(--pad-xs) 0;
     outline: none;
   }
@@ -200,6 +204,7 @@ function onkeydown(e: KeyboardEvent) {
     padding: 3px 6px;
     cursor: pointer;
     font: inherit;
+    font-size: var(--fs-sm);
   }
   .suggest button.on { background: var(--bg-2); }
   .s-label { font-family: var(--code-font); }
