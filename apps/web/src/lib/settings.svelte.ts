@@ -13,7 +13,13 @@ const REVIEW_PROMPT_KEY = "jig:reviewPrompt";
 export type AgentProvider = "claude" | "gemini" | "codex";
 
 export type UiSize = "small" | "medium" | "large";
-const UI_SIZE_PX: Record<UiSize, number> = { small: 13, medium: 14, large: 17 };
+// Bumped one notch up across the board — the old "medium" (14px) now reads as
+// "small", so every size is more comfortable on a high-DPI display.
+const UI_SIZE_PX: Record<UiSize, number> = { small: 14, medium: 16, large: 19 };
+// The px that maps to --ui-scale = 1 (i.e. the component tokens' base sizing in
+// app.css). Fixed — NOT UI_SIZE_PX.medium — so bumping the table above actually
+// scales component text; small (14px) lands on 1.0 = the previous medium.
+const UI_SCALE_BASE = 14;
 
 /** Component spacing scale, roomy → tight. `normal` is the default; `calm` is
  *  roomier, `dense` is extra-compact for small screens. */
@@ -101,8 +107,8 @@ class Settings {
     const px = UI_SIZE_PX[this.uiSize];
     r.setProperty("--ui-font-size", `${px}px`);
     // Drive the density font tokens (--fs*) so UI size scales *all* component
-    // text, not just <body>. Medium (14px) → 1, so the default is unchanged.
-    r.setProperty("--ui-scale", String(px / UI_SIZE_PX.medium));
+    // text, not just <body>. Small (14px) → 1, the component tokens' base size.
+    r.setProperty("--ui-scale", String(px / UI_SCALE_BASE));
     document.documentElement.dataset.density = this.density;
   }
 

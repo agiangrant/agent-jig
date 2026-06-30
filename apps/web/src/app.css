@@ -24,7 +24,7 @@
   --ui-font-size: 14px;
   /* UI-size multiplier: the density font tokens (--fs*) below are scaled by it,
      so the "UI size" setting actually resizes component text, not just <body>.
-     Medium = 1 (tokens keep their base px); set by settings.apply(). */
+     Small = 1 (tokens keep their base px); set by settings.apply(). */
   --ui-scale: 1;
   --code-font-size: 12px;
   /* Height reserved at the top for a custom (frameless) title bar; 0 in the
