@@ -1,15 +1,19 @@
 <script lang="ts">
 import type { ReviewComment, ReviewDiffRow, ReviewFileDiff, ReviewHunk } from "@agent-jig/contracts";
 import Markdown from "./Markdown.svelte";
+import MarkdownInput from "./MarkdownInput.svelte";
 
 interface Props {
   file: ReviewFileDiff;
   comments: ReviewComment[];
+  /** Repo files + skills for @file / /skill autocomplete in the comment editor. */
+  files?: string[];
+  skills?: { name: string; description?: string }[];
   onAdd: (c: { path: string; side: "old" | "new"; line: number; lineText: string; body: string }) => void;
   onResolve: (id: string, resolved: boolean) => void;
   onDismiss: (id: string) => void;
 }
-const { file, comments, onAdd, onResolve, onDismiss }: Props = $props();
+const { file, comments, files = [], skills = [], onAdd, onResolve, onDismiss }: Props = $props();
 
 const STATUS: Record<ReviewFileDiff["status"], { label: string; color: string }> = {
   added: { label: "ADDED", color: "var(--go)" },
@@ -108,14 +112,18 @@ const sign = (k: ReviewDiffRow["kind"]) => (k === "add" ? "+" : k === "del" ? "â
               {/each}
               {#if composing === `${a.side}:${a.line}`}
                 <div class="composer">
-                  <textarea
-                    bind:value={draft}
-                    placeholder="Leave a commentâ€¦"
-                    onkeydown={(e) => {
-                      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") a && save(a.side, a.line, row.text);
-                      if (e.key === "Escape") composing = null;
-                    }}
-                  ></textarea>
+                  <div class="composer-box">
+                    <MarkdownInput
+                      bind:value={draft}
+                      placeholder="Leave a comment â€” @file or /skillâ€¦"
+                      {files}
+                      {skills}
+                      submit="mod-enter"
+                      autofocus
+                      onsubmit={() => a && save(a.side, a.line, row.text)}
+                      oncancel={() => (composing = null)}
+                    />
+                  </div>
                   <div class="composer-actions">
                     <button onclick={() => (composing = null)}>Cancel</button>
                     <button class="primary" onclick={() => a && save(a.side, a.line, row.text)}>Comment</button>
@@ -201,9 +209,9 @@ const sign = (k: ReviewDiffRow["kind"]) => (k === "add" ? "+" : k === "del" ? "â
   .f-actions .dismiss:hover { color: var(--fg); }
   .f-body { color: var(--text-2); }
   .composer { margin: 7px var(--pad) 9px 62px; font-family: var(--ui-font); }
-  .composer textarea {
-    width: 100%; min-height: 3.2em; background: var(--bg-2); border: 1px solid var(--border);
-    border-radius: var(--radius-sm); color: var(--fg); font: inherit; padding: var(--pad-xs) var(--pad-sm); box-sizing: border-box;
+  .composer-box {
+    display: flex; background: var(--bg-2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 0 var(--pad-sm); box-sizing: border-box;
   }
   .composer-actions { display: flex; justify-content: flex-end; gap: var(--gap-sm); margin-top: 4px; }
   .composer-actions .primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }

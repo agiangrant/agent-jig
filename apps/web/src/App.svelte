@@ -49,6 +49,8 @@ if (frameless) document.documentElement.dataset.frameless = "";
 let showSettings = $state(false);
 let settingsTab = $state<"agents" | "review" | "appearance" | "governance" | "tools">("agents");
 let showSkills = $state(false);
+// The header repo crumb's dropdown (repo skills + agents + settings).
+let showRepoMenu = $state(false);
 let showTheme = $state(false);
 
 // Font suggestions: the machine's actual installed families when the Local Font
@@ -426,6 +428,37 @@ let newModel = $state(settings.agentModel);
 let creating = $state(false);
 let createError = $state("");
 
+// @file / /skill autocomplete data for the New Session prompt. No session (and
+// thus no websocket) exists yet, so fetch it statelessly by repo path.
+let newFiles = $state<string[]>([]);
+let newSkills = $state<{ name: string; description?: string }[]>([]);
+async function loadRepoMeta(path: string) {
+  const p = path.trim();
+  if (!p.startsWith("/")) {
+    newFiles = [];
+    newSkills = [];
+    return;
+  }
+  try {
+    const [f, s] = await Promise.all([
+      fetch(`${httpBase}/repo/files?path=${encodeURIComponent(p)}`).then((r) => r.json()),
+      fetch(`${httpBase}/repo/skills?path=${encodeURIComponent(p)}`).then((r) => r.json()),
+    ]);
+    newFiles = (f.files ?? []) as string[];
+    newSkills = ((s.skills ?? []) as { name: string; description?: string }[]).map((x) => ({
+      name: x.name,
+      description: x.description,
+    }));
+  } catch {
+    newFiles = [];
+    newSkills = [];
+  }
+}
+// Refetch whenever the modal is open and the chosen repo path changes.
+$effect(() => {
+  if (showNew) void loadRepoMeta(newRepo);
+});
+
 // Recently-chosen repo folders, for quick re-selection (persisted locally).
 const RECENT_KEY = "jig:recentFolders";
 function loadRecent(): string[] {
@@ -538,6 +571,36 @@ async function createSession() {
 }
 function repoName(path: string): string {
   return path.split("/").filter(Boolean).pop() ?? path;
+}
+
+// --- Repo menu (header crumb dropdown) ---
+/** A provider's short display name (e.g. "Claude"), from the server's list. */
+function providerShort(id: AgentProvider): string {
+  return (providers?.providers.find((p) => p.id === id)?.label ?? id).split(" ")[0];
+}
+/** "Claude · claude-sonnet-4.6" — omit the model when it's the provider default. */
+function agentLabel(id: AgentProvider, model: string | null | undefined): string {
+  const n = providerShort(id);
+  return model ? `${n} · ${model}` : n;
+}
+// The session's own coder + the default reviewer, shown read-only in the menu.
+const coderLabel = $derived(agentLabel(conn.session?.agentSdk ?? "claude", conn.session?.agentModel));
+const coderInitial = $derived(providerShort(conn.session?.agentSdk ?? "claude").slice(0, 1).toUpperCase());
+const reviewerLabel = $derived(
+  agentLabel(settings.reviewerSdk, settings.reviewerModelFor(settings.reviewerSdk) || null),
+);
+const reviewerInitial = $derived(providerShort(settings.reviewerSdk).slice(0, 1).toUpperCase());
+const skillCount = $derived(conn.skills.length);
+// Skills mapped to MarkdownInput's {name, description} shape for /skill autocomplete.
+const skillItems = $derived(conn.skills.map((s) => ({ name: s.name, description: s.description })));
+function openRepoSettings() {
+  showRepoMenu = false;
+  settingsTab = "agents";
+  showSettings = true;
+}
+function openSkills() {
+  showRepoMenu = false;
+  showSkills = true;
 }
 
 const toggle = () => conn.setDial(conn.mode === "slowed" ? "realtime" : "slowed");
@@ -1197,9 +1260,6 @@ function answerFor(q: string): string {
   const o = (other[q] ?? "").trim();
   return o.length > 0 ? o : (picks[q] ?? []).join(", ");
 }
-function setOther(q: string, value: string) {
-  other = { ...other, [q]: value };
-}
 function canSubmit(question: { questions: { question: string }[] }): boolean {
   return question.questions.every((qq) => answerFor(qq.question).length > 0);
 }
@@ -1393,6 +1453,10 @@ function onGlobalKey(e: KeyboardEvent) {
     return;
   }
   if (e.key === "Escape") {
+    if (showRepoMenu) {
+      showRepoMenu = false;
+      return;
+    }
     if (paletteOpen) {
       if (paletteView === "theme") exitThemeView();
       else closePalette();
@@ -1503,10 +1567,6 @@ function onGlobalKey(e: KeyboardEvent) {
     </div>
 
     <div class="nav-footer">
-      <button class="settings-btn" onclick={() => (showSkills = true)}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M13 2 3 14h7l-1 8 10-12h-7z" /></svg>
-        Skills
-      </button>
       <button class="settings-btn" onclick={() => (showSettings = true)}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
         Settings
@@ -1544,7 +1604,55 @@ function onGlobalKey(e: KeyboardEvent) {
           </button>
           <div class="crumb" data-tauri-drag-region>
             {#if conn.session?.repoPath}
-              <span class="crumb-repo" data-tauri-drag-region>{repoName(conn.session.repoPath)}</span>
+              <div class="repo-menu-wrap">
+                <button
+                  class="crumb-repo"
+                  class:open={showRepoMenu}
+                  onclick={() => (showRepoMenu = !showRepoMenu)}
+                  title="Repository menu"
+                  aria-haspopup="menu"
+                  aria-expanded={showRepoMenu}
+                >
+                  <svg class="repo-ico" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 3v15a2 2 0 0 0 2 2h11M6 3h11v13H8a2 2 0 0 0-2 2" /></svg>
+                  <span>{repoName(conn.session.repoPath)}</span>
+                  <svg class="repo-chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
+                </button>
+                {#if showRepoMenu}
+                  <button class="repo-scrim" aria-label="Close menu" onclick={() => (showRepoMenu = false)}></button>
+                  <div class="repo-menu" role="menu">
+                    <div class="rm-head">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" aria-hidden="true"><path d="M6 3v15a2 2 0 0 0 2 2h11M6 3h11v13H8a2 2 0 0 0-2 2" /></svg>
+                      <span class="rm-name">{repoName(conn.session.repoPath)}</span>
+                      <span class="rm-kind">repository</span>
+                    </div>
+                    <button class="rm-skills" role="menuitem" onclick={openSkills}>
+                      <span class="rm-ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" aria-hidden="true"><path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15.5l-1.9-4.6L5.5 9l4.6-1.4z" /></svg></span>
+                      <span class="rm-txt">
+                        <span class="rm-title">Skills</span>
+                        <span class="rm-sub">{skillCount} agent-authored {skillCount === 1 ? "capability" : "capabilities"}</span>
+                      </span>
+                      <svg class="rm-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M9 18l6-6-6-6" /></svg>
+                    </button>
+                    <div class="rm-agents">
+                      <div class="rm-label">Agents</div>
+                      <div class="rm-agent">
+                        <span class="rm-av">{coderInitial}</span>
+                        <span class="rm-role">Coder</span>
+                        <span class="rm-agent-name">{coderLabel}</span>
+                      </div>
+                      <div class="rm-agent">
+                        <span class="rm-av">{reviewerInitial}</span>
+                        <span class="rm-role">Reviewer</span>
+                        <span class="rm-agent-name">{reviewerLabel}</span>
+                      </div>
+                    </div>
+                    <button class="rm-settings" role="menuitem" onclick={openRepoSettings}>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" /></svg>
+                      <span>Repo settings</span>
+                    </button>
+                  </div>
+                {/if}
+              </div>
               <span class="crumb-sep" data-tauri-drag-region>/</span>
             {/if}
             <h1 class="title" data-tauri-drag-region>{conn.session?.title ?? conn.session?.taskPrompt ?? "Session"}</h1>
@@ -1627,12 +1735,16 @@ function onGlobalKey(e: KeyboardEvent) {
                 <section class="plan">
                   <h2 class="plan-title">The agent has a plan — approve to start editing</h2>
                   <pre class="plan-body">{pl.plan}</pre>
-                  <textarea
-                    class="plan-reason"
-                    rows="2"
-                    bind:value={planReason}
-                    placeholder="Request changes (feedback for the agent)…"
-                  ></textarea>
+                  <div class="plan-reason">
+                    <MarkdownInput
+                      bind:value={planReason}
+                      placeholder="Request changes — @file or /skill (feedback for the agent)…"
+                      files={conn.files}
+                      skills={skillItems}
+                      submit="mod-enter"
+                      onsubmit={() => planReason.trim() && requestPlanChanges(pl.id)}
+                    />
+                  </div>
                   <div class="plan-actions">
                     <button class="plan-changes" disabled={!planReason.trim()} onclick={() => requestPlanChanges(pl.id)}>
                       Request changes
@@ -1666,12 +1778,15 @@ function onGlobalKey(e: KeyboardEvent) {
                           </button>
                         {/each}
                       </div>
-                      <input
-                        class="q-other"
-                        placeholder="Other… (type a custom answer)"
-                        value={other[q.question] ?? ""}
-                        oninput={(e) => setOther(q.question, e.currentTarget.value)}
-                      />
+                      <div class="q-other">
+                        <MarkdownInput
+                          bind:value={other[q.question]}
+                          placeholder="Other… — @file or /skill (custom answer)"
+                          files={conn.files}
+                          skills={skillItems}
+                          submit="none"
+                        />
+                      </div>
                     </div>
                   {/each}
                   <button class="q-submit" disabled={!canSubmit(aq)} onclick={() => submitAnswers(aq)}>
@@ -1722,6 +1837,8 @@ function onGlobalKey(e: KeyboardEvent) {
                         path={focusedPath}
                         base={httpBase}
                         {sessionId}
+                        files={conn.files}
+                        skills={skillItems}
                         comments={conn.lineComments.filter((c) => c.editId === focusedEditId)}
                         onAddComment={(c) =>
                           conn.addLineComment({
@@ -1736,12 +1853,18 @@ function onGlobalKey(e: KeyboardEvent) {
 
                     {#if rejectingEditId === focusedEditId}
                       <form class="surf-reject" onsubmit={(e) => { e.preventDefault(); confirmReject(); }}>
-                        <input
-                          use:focusOnMount
-                          bind:value={rejectReason}
-                          placeholder="Reason for the agent (optional) — Enter to reject, Esc to cancel"
-                          onkeydown={(e) => { if (e.key === "Escape") cancelReject(); }}
-                        />
+                        <div class="surf-reject-box">
+                          <MarkdownInput
+                            bind:value={rejectReason}
+                            placeholder="Reason for the agent — @file or /skill (optional; Enter to reject, Esc to cancel)"
+                            files={conn.files}
+                            skills={skillItems}
+                            submit="enter"
+                            autofocus
+                            onsubmit={confirmReject}
+                            oncancel={cancelReject}
+                          />
+                        </div>
                         <button type="submit" class="reject">Reject</button>
                         <button type="button" onclick={cancelReject}>Cancel</button>
                       </form>
@@ -1986,7 +2109,7 @@ function onGlobalKey(e: KeyboardEvent) {
             <MarkdownInput
               bind:value={message}
               files={conn.files}
-              skills={conn.skills.map((s) => ({ name: s.name, description: s.description }))}
+              skills={skillItems}
               placeholder={stopped ? "Send a message to resume…" : "Ask, steer, @file or /skill…"}
               onsubmit={steer}
             />
@@ -2143,7 +2266,16 @@ function onGlobalKey(e: KeyboardEvent) {
       {/if}
 
       <label for="task">Task</label>
-      <textarea id="task" rows="6" use:focusOnMount bind:value={newTask} placeholder="Describe the work — multi-line is fine…"></textarea>
+      <div class="task-box">
+        <MarkdownInput
+          bind:value={newTask}
+          placeholder="Describe the work — @file or /skill, multi-line is fine…"
+          files={newFiles}
+          skills={newSkills}
+          submit="none"
+          autofocus
+        />
+      </div>
 
       <div class="agent-row">
         <span class="set-label">Agent</span>
@@ -3263,15 +3395,197 @@ function onGlobalKey(e: KeyboardEvent) {
     align-items: center;
     gap: 9px;
   }
-  .crumb-repo {
-    font-size: var(--fs-sm);
-    color: var(--text-3);
-    font-weight: 500;
+  .repo-menu-wrap {
+    position: relative;
     flex: none;
+    display: flex;
+  }
+  .crumb-repo {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg-2);
+    border-radius: 7px;
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--text-2);
+    padding: 3px 8px 3px 9px;
+    transition: background 0.18s ease, border-color 0.18s ease;
+  }
+  .crumb-repo:hover,
+  .crumb-repo.open {
+    background: var(--bg-3);
+    color: var(--text);
+  }
+  .crumb-repo .repo-ico,
+  .crumb-repo .repo-chev {
+    color: var(--text-3);
+    flex: none;
+  }
+  .crumb-repo .repo-chev {
+    transition: transform 0.18s ease;
+  }
+  .crumb-repo.open .repo-chev {
+    transform: rotate(180deg);
   }
   .crumb-sep {
     color: var(--text-3);
     flex: none;
+  }
+  /* Repo dropdown (skills + agents + settings) anchored to the crumb button. */
+  .repo-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    cursor: default;
+  }
+  .repo-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    width: 340px;
+    z-index: 41;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    animation: gv-fade 0.16s ease;
+  }
+  .rm-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: var(--pad-sm) var(--pad);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .rm-name {
+    font-size: var(--fs-sm);
+    font-weight: 700;
+    color: var(--text);
+  }
+  .rm-kind {
+    margin-left: auto;
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+  }
+  .rm-skills,
+  .rm-settings {
+    width: 100%;
+    text-align: left;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    font: inherit;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    transition: background 0.15s ease;
+  }
+  .rm-skills:hover,
+  .rm-settings:hover {
+    background: var(--bg-3);
+  }
+  .rm-skills {
+    padding: 11px var(--pad);
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .rm-ico {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    flex: none;
+    background: var(--accent-2);
+    border: 1px solid var(--accent-dim);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .rm-txt {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .rm-title {
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    color: var(--text);
+  }
+  .rm-sub {
+    font-size: var(--fs-xs);
+    color: var(--text-2);
+    margin-top: 1px;
+  }
+  .rm-arrow {
+    color: var(--text-3);
+    flex: none;
+  }
+  .rm-agents {
+    padding: 11px var(--pad) 9px;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .rm-label {
+    font-size: var(--fs-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-3);
+    font-weight: 700;
+    margin-bottom: 8px;
+  }
+  .rm-agent {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .rm-agent + .rm-agent {
+    margin-top: 7px;
+  }
+  .rm-av {
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    flex: none;
+    background: var(--accent);
+    color: var(--on-accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 700;
+  }
+  .rm-role {
+    font-size: var(--fs-xs);
+    color: var(--text-3);
+    font-weight: 600;
+    width: 58px;
+    flex: none;
+  }
+  .rm-agent-name {
+    font-size: var(--fs-sm);
+    color: var(--text);
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .rm-settings {
+    padding: 10px var(--pad);
+    color: var(--text);
+  }
+  .rm-settings svg {
+    color: var(--text-2);
+    flex: none;
+  }
+  .rm-settings span {
+    font-size: var(--fs-sm);
+    font-weight: 600;
   }
   .title {
     min-width: 0;
@@ -3641,15 +3955,13 @@ function onGlobalKey(e: KeyboardEvent) {
     border-top: 1px solid var(--line);
     background: var(--bg-1);
   }
-  .surf-reject input {
+  .surf-reject-box {
     flex: 1;
+    display: flex;
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: 6px;
-    color: var(--fg);
-    font: inherit;
-    font-size: 12px;
-    padding: 6px 9px;
+    padding: 0 9px;
   }
   .surf-reject button {
     border: 1px solid var(--line);
@@ -4037,15 +4349,13 @@ function onGlobalKey(e: KeyboardEvent) {
     padding: var(--pad-xs) var(--pad-sm);
   }
   .plan-reason {
+    display: flex;
     width: 100%;
     margin-top: var(--gap-sm);
     background: var(--bg-2);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    padding: var(--pad-xs) var(--pad-sm);
-    color: var(--fg);
-    font: inherit;
-    resize: vertical;
+    padding: 0 var(--pad-sm);
     box-sizing: border-box;
   }
   .plan-actions {
@@ -4160,14 +4470,13 @@ function onGlobalKey(e: KeyboardEvent) {
     overflow: auto;
   }
   .q-other {
+    display: flex;
     margin-top: var(--gap-sm);
     width: 100%;
     background: var(--bg-2);
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    padding: var(--pad-xs) var(--pad-sm);
-    color: var(--fg);
-    font: inherit;
+    padding: 0 var(--pad-sm);
     box-sizing: border-box;
   }
   .q-submit {
@@ -4636,6 +4945,17 @@ function onGlobalKey(e: KeyboardEvent) {
     font-size: var(--fs-sm);
     line-height: 1.5;
     resize: vertical;
+  }
+  /* New Session task prompt: wraps MarkdownInput; roomy default like rows="6". */
+  .task-box {
+    display: flex;
+    background: var(--bg-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 0 var(--pad-sm);
+  }
+  .task-box :global(textarea) {
+    min-height: 7.5em;
   }
   .err {
     color: var(--danger);

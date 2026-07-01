@@ -2,6 +2,7 @@
 import type { LineComment } from "@agent-jig/contracts";
 import Code from "./Code.svelte";
 import { toHunks } from "./diff.ts";
+import MarkdownInput from "./MarkdownInput.svelte";
 import { diffMode } from "./diffMode.svelte.ts";
 import { buildRows, type DiffRow, toSplit } from "./fileDiff.ts";
 import { fetchFileSlice } from "./files.ts";
@@ -18,6 +19,8 @@ let {
   base,
   sessionId,
   comments = [],
+  files = [],
+  skills = [],
   onAddComment,
   onRemoveComment,
 }: {
@@ -28,6 +31,9 @@ let {
   sessionId: string;
   /** Line comments already pinned to this edit (filtered by the caller). */
   comments?: LineComment[];
+  /** Repo files + skills for @file / /skill autocomplete in the comment editor. */
+  files?: string[];
+  skills?: { name: string; description?: string }[];
   /** Pin a new line comment. When absent, the diff is read-only (no gutter). */
   onAddComment?: (c: NewComment) => void;
   /** Remove a pinned comment by id. */
@@ -221,20 +227,6 @@ function saveComment(): void {
   cancelComposer();
 }
 
-function composerKey(e: KeyboardEvent): void {
-  if (e.key === "Escape") {
-    e.preventDefault();
-    cancelComposer();
-  } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-    e.preventDefault();
-    saveComment();
-  }
-}
-
-/** Focus the composer textarea when it mounts. */
-function autofocus(node: HTMLTextAreaElement): void {
-  node.focus();
-}
 </script>
 
 <div class="fd gv-scroll" bind:this={bodyEl}>
@@ -265,11 +257,18 @@ function autofocus(node: HTMLTextAreaElement): void {
         {/each}
         {#if isOpen(side, line)}
           <div class="cmt-composer">
-            <textarea
-              use:autofocus
-              bind:value={draft}
-              placeholder="Comment on line {line}…  (⌘/Ctrl+Enter to add)"
-              onkeydown={composerKey}></textarea>
+            <div class="cmt-composer-box">
+              <MarkdownInput
+                bind:value={draft}
+                placeholder={`Comment on line ${line}… — @file or /skill (⌘/Ctrl+Enter to add)`}
+                {files}
+                {skills}
+                submit="mod-enter"
+                autofocus
+                onsubmit={saveComment}
+                oncancel={cancelComposer}
+              />
+            </div>
             <div class="cmt-actions">
               <button class="cmt-cancel" onclick={cancelComposer}>Cancel</button>
               <button class="cmt-save" disabled={draft.trim() === ""} onclick={saveComment}>
@@ -598,21 +597,15 @@ function autofocus(node: HTMLTextAreaElement): void {
     flex-direction: column;
     gap: 6px;
   }
-  .cmt-composer textarea {
-    width: 100%;
+  .cmt-composer-box {
+    display: flex;
     box-sizing: border-box;
-    min-height: 52px;
-    resize: vertical;
     border: 1px solid var(--line);
     border-radius: 6px;
     background: var(--bg);
-    color: var(--fg);
-    font-family: var(--ui-font);
-    font-size: 12px;
-    padding: 6px 8px;
+    padding: 0 8px;
   }
-  .cmt-composer textarea:focus {
-    outline: none;
+  .cmt-composer-box:focus-within {
     border-color: var(--accent);
   }
   .cmt-actions {

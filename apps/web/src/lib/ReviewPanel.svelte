@@ -2,6 +2,7 @@
 import type { AgentProvider, ProvidersInfo, ReviewComment } from "@agent-jig/contracts";
 import AgentPicker from "./AgentPicker.svelte";
 import type { JigConnection } from "./connection.svelte.ts";
+import MarkdownInput from "./MarkdownInput.svelte";
 import ReviewDiff from "./ReviewDiff.svelte";
 import { settings } from "./settings.svelte.ts";
 
@@ -10,6 +11,9 @@ interface Props {
   providers: ProvidersInfo | null;
 }
 const { conn, providers }: Props = $props();
+
+// Files + skills for @file / /skill autocomplete in the review comment editors.
+const skillItems = $derived(conn.skills.map((s) => ({ name: s.name, description: s.description })));
 
 let summary = $state("");
 let reviewer = $state<AgentProvider>(settings.reviewerSdk);
@@ -150,6 +154,8 @@ const summaryTitle = $derived(
             <ReviewDiff
               file={selectedFile}
               comments={commentsFor(selectedFile.path)}
+              files={conn.files}
+              skills={skillItems}
               onAdd={(c) => conn.addReviewComment(c)}
               onResolve={(id, resolved) => conn.resolveReviewComment(id, resolved)}
               onDismiss={(id) => conn.deleteReviewComment(id)}
@@ -160,7 +166,15 @@ const summaryTitle = $derived(
     </div>
 
     <div class="submit">
-      <input bind:value={summary} placeholder="Overall note for the coder (optional)…" />
+      <div class="summary-box">
+        <MarkdownInput
+          bind:value={summary}
+          placeholder="Overall note for the coder — @file or /skill (optional)…"
+          files={conn.files}
+          skills={skillItems}
+          submit="none"
+        />
+      </div>
       <button
         class="primary"
         disabled={open.length === 0 && !summary.trim()}
@@ -269,9 +283,9 @@ const summaryTitle = $derived(
     flex: none; display: flex; gap: var(--gap-sm); align-items: center;
     padding: var(--pad-sm) var(--pad); border-top: 1px solid var(--border-soft); background: var(--bg-1);
   }
-  .submit input {
-    flex: 1; min-width: 0; background: var(--bg-2); border: 1px solid var(--border);
-    border-radius: var(--radius-sm); color: var(--fg); font: inherit; font-size: var(--fs-sm); padding: var(--pad-xs) var(--pad-sm);
+  .summary-box {
+    flex: 1; min-width: 0; display: flex; background: var(--bg-2); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 0 var(--pad-sm);
   }
   .submit .primary {
     flex: none; background: var(--accent); color: var(--on-accent);
