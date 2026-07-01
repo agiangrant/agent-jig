@@ -3,14 +3,26 @@ interface SkillItem {
   name: string;
   description?: string;
 }
+type SubmitMode = "enter" | "mod-enter" | "none";
 interface Props {
   value: string;
   placeholder?: string;
   files?: string[];
   skills?: SkillItem[];
   disabled?: boolean;
-  /** Fired on Enter (without the suggestion popup open and without Shift). */
+  /** Which keystroke fires onsubmit when the popup is closed. Default "enter"
+   *  keeps the conversation composer unchanged. "mod-enter" = ⌘/Ctrl+Enter
+   *  (comment editors); "none" = never (Enter always inserts a newline). */
+  submit?: SubmitMode;
+  /** Suggestion popup direction. "auto" (default) picks up/down by the space
+   *  available around the caret; force with "up"/"down". */
+  placement?: "up" | "down" | "auto";
+  /** Focus the textarea on mount (replaces use:focusOnMount / use:autofocus). */
+  autofocus?: boolean;
+  /** Fired per `submit` when the popup is closed. */
   onsubmit?: () => void;
+  /** Fired on Escape when the popup is closed (comment/reject cancel). */
+  oncancel?: () => void;
 }
 let {
   value = $bindable(""),
@@ -18,11 +30,22 @@ let {
   files = [],
   skills = [],
   disabled = false,
+  submit = "enter",
+  placement = "auto",
+  autofocus = false,
   onsubmit,
+  oncancel,
 }: Props = $props();
 
 let el: HTMLTextAreaElement | undefined = $state();
 let sel = $state(0);
+// Forced closed after a pick (or Escape); the suggestions derived can still see
+// a token under the caret (which is repositioned a microtask later), so this
+// guarantees the popup closes. Cleared on the next real keystroke.
+let hideSuggest = $state(false);
+$effect(() => {
+  if (autofocus) el?.focus();
+});
 
 interface Suggestion {
   label: string;
@@ -70,11 +93,77 @@ const suggestions = $derived.by<Suggestion[]>(() => {
     .map((s) => ({ label: `/${s.name}`, hint: s.description, insert: `/${s.name} ` }));
 });
 
-const open = $derived(suggestions.length > 0);
+const open = $derived(!hideSuggest && suggestions.length > 0);
 $effect(() => {
   // Keep the highlighted index in range as the list changes.
   void suggestions;
   if (sel >= suggestions.length) sel = 0;
+});
+
+// The popup is position:fixed and anchored to the CARET LINE (not the whole
+// textarea) so it sits next to the text you're typing, and can't be clipped by
+// an ancestor modal / scroll container's overflow. The caret's pixel position
+// is measured with a hidden mirror div that mimics the textarea's text layout.
+type Anchor = { left: number; width: number; top: number; bottom: number };
+let anchor = $state<Anchor | null>(null);
+const MIRROR_PROPS = [
+  "box-sizing", "width", "padding-top", "padding-right", "padding-bottom", "padding-left",
+  "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
+  "font-style", "font-variant", "font-weight", "font-stretch", "font-size", "font-family",
+  "line-height", "letter-spacing", "text-transform", "word-spacing", "tab-size", "text-indent",
+];
+function measure() {
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  const style = getComputedStyle(el);
+  const mirror = document.createElement("div");
+  for (const p of MIRROR_PROPS) mirror.style.setProperty(p, style.getPropertyValue(p));
+  mirror.style.position = "absolute";
+  mirror.style.top = "0";
+  mirror.style.left = "-9999px";
+  mirror.style.visibility = "hidden";
+  mirror.style.whiteSpace = "pre-wrap";
+  mirror.style.wordWrap = "break-word";
+  mirror.style.overflow = "hidden";
+  const caret = el.selectionStart ?? value.length;
+  mirror.textContent = value.slice(0, caret);
+  const marker = document.createElement("span");
+  marker.textContent = value.slice(caret) || ".";
+  mirror.appendChild(marker);
+  document.body.appendChild(mirror);
+  const markerTop = marker.offsetTop;
+  document.body.removeChild(mirror);
+  const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.4;
+  const borderTop = parseFloat(style.borderTopWidth) || 0;
+  const top = rect.top + borderTop + markerTop - el.scrollTop;
+  anchor = { left: rect.left, width: rect.width, top, bottom: top + lineHeight };
+}
+$effect(() => {
+  void value; // re-measure as the caret / token changes
+  if (open) measure();
+  else anchor = null;
+});
+$effect(() => {
+  if (!open) return;
+  const m = () => measure();
+  window.addEventListener("scroll", m, true);
+  window.addEventListener("resize", m);
+  return () => {
+    window.removeEventListener("scroll", m, true);
+    window.removeEventListener("resize", m);
+  };
+});
+const POPUP_MAX = 240; // ~14em popup + padding, for the auto up/down choice
+const suggestStyle = $derived.by(() => {
+  const a = anchor;
+  if (!a) return "";
+  const base = `left:${Math.round(a.left)}px; width:${Math.round(a.width)}px;`;
+  const spaceBelow = window.innerHeight - a.bottom;
+  const down =
+    placement === "down" ? true : placement === "up" ? false : spaceBelow >= POPUP_MAX || spaceBelow >= a.top;
+  return down
+    ? `${base} top:${Math.round(a.bottom + 4)}px;`
+    : `${base} bottom:${Math.round(window.innerHeight - a.top + 4)}px;`;
 });
 
 function choose(s: Suggestion) {
@@ -83,6 +172,8 @@ function choose(s: Suggestion) {
   const caret = el.selectionStart;
   value = value.slice(0, t.start) + s.insert + value.slice(caret);
   const pos = t.start + s.insert.length;
+  // Close the popup now; it reopens when the user types a fresh @/​/ token.
+  hideSuggest = true;
   // Restore caret after the inserted mention.
   queueMicrotask(() => {
     if (el) {
@@ -94,40 +185,59 @@ function choose(s: Suggestion) {
 
 function onkeydown(e: KeyboardEvent) {
   if (open) {
+    // The popup owns navigation keys — stop them reaching a parent handler
+    // (e.g. a modal's ⌘Enter submit) while a suggestion is being chosen.
     if (e.key === "ArrowDown") {
       e.preventDefault();
+      e.stopPropagation();
       sel = (sel + 1) % suggestions.length;
       return;
     }
     if (e.key === "ArrowUp") {
       e.preventDefault();
+      e.stopPropagation();
       sel = (sel - 1 + suggestions.length) % suggestions.length;
       return;
     }
     if (e.key === "Enter" || e.key === "Tab") {
       e.preventDefault();
+      e.stopPropagation();
       const s = suggestions[sel];
       if (s) choose(s);
       return;
     }
     if (e.key === "Escape") {
       e.preventDefault();
+      e.stopPropagation();
       sel = 0;
-      // Collapse the popup by nudging the caret past the token.
-      value = `${value} `.trimEnd() + (value.endsWith(" ") ? "" : " ");
+      hideSuggest = true; // close the popup without mutating the text
       return;
     }
+    // Any other key falls through so typing keeps filtering.
   }
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    onsubmit?.();
+
+  // Popup closed:
+  if (e.key === "Escape") {
+    oncancel?.();
+    return;
+  }
+  if (e.key === "Enter") {
+    const mod = e.metaKey || e.ctrlKey;
+    if (submit === "enter" && !e.shiftKey && !mod) {
+      e.preventDefault();
+      onsubmit?.();
+    } else if (submit === "mod-enter" && mod) {
+      e.preventDefault();
+      onsubmit?.();
+    }
+    // submit === "none": Enter inserts a newline; a parent may handle mod+Enter.
   }
 }
 </script>
 
 <div class="mdin">
   {#if open}
-    <ul class="suggest" role="listbox">
+    <ul class="suggest" role="listbox" style={suggestStyle}>
       {#each suggestions as s, i (s.label)}
         <li>
           <button
@@ -152,6 +262,7 @@ function onkeydown(e: KeyboardEvent) {
     {disabled}
     rows="1"
     {onkeydown}
+    oninput={() => (hideSuggest = false)}
   ></textarea>
 </div>
 
@@ -175,11 +286,10 @@ function onkeydown(e: KeyboardEvent) {
     padding: var(--pad-xs) 0;
     outline: none;
   }
+  /* Fixed + JS-anchored (see suggestStyle) so a modal/scroll container's
+     overflow can't clip it. top/left/width/bottom come from the inline style. */
   .suggest {
-    position: absolute;
-    bottom: calc(100% + 4px);
-    left: 0;
-    right: 0;
+    position: fixed;
     max-height: 14em;
     overflow-y: auto;
     margin: 0;
@@ -189,7 +299,7 @@ function onkeydown(e: KeyboardEvent) {
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
     box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
-    z-index: 20;
+    z-index: 60;
   }
   .suggest button {
     display: flex;
