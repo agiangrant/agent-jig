@@ -15,6 +15,8 @@ import { Hono } from "hono";
 import { WebSocketServer } from "ws";
 import { loadAgentConfig, providerStatuses } from "./config.ts";
 import { type CreateInput, SessionManager } from "./manager.ts";
+import { listRepoFiles } from "./repo-files.ts";
+import { listSkills } from "./skills.ts";
 import { serveWeb } from "./static.ts";
 
 const DEFAULT_PORT = 4318;
@@ -220,6 +222,19 @@ export async function startJigServer(opts: ServerOptions): Promise<RunningServer
     } catch (e) {
       return c.json({ error: (e as Error).message ?? "could not read file" }, 400);
     }
+  });
+  // Stateless repo introspection for the New Session composer, which needs
+  // @file / /skill autocomplete before any session (and its websocket) exists.
+  // A bad/non-git path yields an empty list rather than an error.
+  app.get("/repo/files", (c) => {
+    const path = c.req.query("path");
+    if (!path) return c.json({ error: "path is required" }, 400);
+    return c.json({ files: listRepoFiles(path) });
+  });
+  app.get("/repo/skills", (c) => {
+    const path = c.req.query("path");
+    if (!path) return c.json({ error: "path is required" }, 400);
+    return c.json({ skills: listSkills(path) });
   });
   app.get("/*", serveWeb(opts.webRoot ?? defaultWebRoot()));
 

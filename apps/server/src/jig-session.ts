@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -55,6 +54,7 @@ import { Worktree } from "@agent-jig/worktree";
 import type { WebSocket } from "ws";
 import { Broadcaster } from "./broadcaster.ts";
 import { buildChangeView, visibleEvents } from "./changeView.ts";
+import { listRepoFiles } from "./repo-files.ts";
 import { listSkills, SKILL_AUTHOR_SYSTEM, saveSkill } from "./skills.ts";
 
 export interface JigSessionDeps {
@@ -950,20 +950,7 @@ export class JigSession {
 
   /** Repo-relative tracked files, for @file mention autocomplete (capped). */
   private broadcastFiles(): void {
-    let files: string[] = [];
-    try {
-      const out = execFileSync("git", ["-C", this.repoPath, "ls-files", "-z"], {
-        encoding: "utf8",
-        maxBuffer: 32 * 1024 * 1024,
-      });
-      files = out
-        .split("\0")
-        .filter((f) => f.length > 0)
-        .slice(0, 5000);
-    } catch {
-      files = [];
-    }
-    this.broadcaster.broadcast({ type: "files_list", files });
+    this.broadcaster.broadcast({ type: "files_list", files: listRepoFiles(this.repoPath) });
   }
 
   // --- Skills ---
